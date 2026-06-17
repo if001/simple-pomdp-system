@@ -1,0 +1,23 @@
+{
+  "name": "@chat-agent/simple-pomdp-system",
+  "version": "0.1.0",
+  "description": "Simple POMDP based proactive dialogue system package",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "start:background": "tsx --env-file=.env.ao src/cli/runBackground.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@vitest/coverage-v8": "^3.2.6",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.6"
+  }
+}
