@@ -18,6 +18,10 @@ export const createFileTurnRecordStore = (
 
   const loadBotFile = async (botId: string): Promise<BotTurnRecordFile> => {
     const path = join(options.baseDir, `${sanitize(botId)}.json`);
+    console.log(
+      "[createFileTurnRecordStore.loadBotFile] save queue file: ",
+      path,
+    );
     try {
       const raw = await readFile(path, "utf8");
       const parsed = JSON.parse(raw) as BotTurnRecordFile;

@@ -5,12 +5,16 @@ import {
   createFileQueueBackgroundInputSink,
   createFileTurnRecordStore,
   createFileUserBeliefStore,
+  loadInitialDomainCandidates,
   createOllamaDialoguePlanningModel,
   createSimplePomdpBackgroundApp,
   getFileQueueStatus,
+  type SimplePomdpBackgroundAppOptions,
 } from "../index";
 
-export const buildSimplePomdpBackgroundAppFromEnv = (env: NodeJS.ProcessEnv) => {
+export const buildSimplePomdpBackgroundAppFromEnv = async (
+  env: NodeJS.ProcessEnv,
+) => {
   const botId = env.BOT_ID ?? "ao";
   const threadIds = (env.SIMPLE_POMDP_THREAD_IDS ?? "")
     .split(",")
@@ -22,11 +26,21 @@ export const buildSimplePomdpBackgroundAppFromEnv = (env: NodeJS.ProcessEnv) => 
   const userId = env.SIMPLE_POMDP_USER_ID ?? "discord-user";
   const storeDir = env.SIMPLE_POMDP_STORE_DIR ?? "data/simple-pomdp-system";
   const queueFilePath = requiredFromEnv(env, "SIMPLE_POMDP_QUEUE_FILE");
-  const app = createSimplePomdpBackgroundApp({
+  const initialDomainCandidatesFile =
+    env.SIMPLE_POMDP_INITIAL_DOMAIN_CANDIDATES_FILE ??
+    join(__dirname, "../../domains/initial_domains.txt");
+  const initialDomainCandidates = await loadInitialDomainCandidates(
+    initialDomainCandidatesFile,
+  );
+  const options: SimplePomdpBackgroundAppOptions = {
     botId,
     threadIds,
     userId,
-    pollMs: optionalNumberFromEnv(env, "SIMPLE_POMDP_BACKGROUND_POLL_MS", 60_000),
+    pollMs: optionalNumberFromEnv(
+      env,
+      "SIMPLE_POMDP_BACKGROUND_POLL_MS",
+      60_000,
+    ),
     turnRecordStore: createFileTurnRecordStore({
       baseDir: join(storeDir, "turn-records"),
       maxTurnsPerThread: optionalNumberFromEnv(
@@ -68,7 +82,11 @@ export const buildSimplePomdpBackgroundAppFromEnv = (env: NodeJS.ProcessEnv) => 
         ? { debugLogFilePath: env.SIMPLE_POMDP_QUEUE_DEBUG_LOG_FILE }
         : {}),
     }),
-    recentTurnLimit: optionalNumberFromEnv(env, "SIMPLE_POMDP_RECENT_TURN_LIMIT", 12),
+    recentTurnLimit: optionalNumberFromEnv(
+      env,
+      "SIMPLE_POMDP_RECENT_TURN_LIMIT",
+      12,
+    ),
     interactionLogLimit: optionalNumberFromEnv(
       env,
       "SIMPLE_POMDP_INTERACTION_LOG_LIMIT",
@@ -78,6 +96,11 @@ export const buildSimplePomdpBackgroundAppFromEnv = (env: NodeJS.ProcessEnv) => 
       env,
       "SIMPLE_POMDP_OBSERVE_WINDOW_TURNS",
       3,
+    ),
+    pendingTimeoutMs: optionalNumberFromEnv(
+      env,
+      "SIMPLE_POMDP_PENDING_TIMEOUT_MS",
+      6 * 60 * 60 * 1000,
     ),
     dispatchCooldownMs: optionalNumberFromEnv(
       env,
@@ -89,6 +112,17 @@ export const buildSimplePomdpBackgroundAppFromEnv = (env: NodeJS.ProcessEnv) => 
       "SIMPLE_POMDP_MAX_PENDING_INTERACTIONS",
       1,
     ),
+    interactionStartHour: optionalNumberFromEnv(
+      env,
+      "SIMPLE_POMDP_INTERACTION_START_HOUR",
+      0,
+    ),
+    interactionEndHour: optionalNumberFromEnv(
+      env,
+      "SIMPLE_POMDP_INTERACTION_END_HOUR",
+      24,
+    ),
+    initialDomainCandidates,
     shouldRun: async () => {
       const status = await getFileQueueStatus(queueFilePath);
       const busy =
@@ -100,20 +134,22 @@ export const buildSimplePomdpBackgroundAppFromEnv = (env: NodeJS.ProcessEnv) => 
       }
       return !busy;
     },
-  });
+  };
   return {
     kind: "app" as const,
-    app,
+    app: createSimplePomdpBackgroundApp(options),
     meta: {
       botId,
       userId,
       threadIds,
+      initialDomainCandidatesFile,
+      initialDomainCount: initialDomainCandidates.length,
     },
   };
 };
 
 const main = async (): Promise<void> => {
-  const built = buildSimplePomdpBackgroundAppFromEnv(process.env);
+  const built = await buildSimplePomdpBackgroundAppFromEnv(process.env);
   if (built.kind === "empty") {
     process.stdout.write(
       "[simple-pomdp] SIMPLE_POMDP_THREAD_IDS is empty; exiting without starting runner\n",
@@ -121,7 +157,7 @@ const main = async (): Promise<void> => {
     return;
   }
   process.stdout.write(
-    `[simple-pomdp] starting botId=${built.meta.botId} userId=${built.meta.userId} threads=${built.meta.threadIds.join(",")}\n`,
+    `[simple-pomdp] starting botId=${built.meta.botId} userId=${built.meta.userId} threads=${built.meta.threadIds.join(",")} domains=${built.meta.initialDomainCount} domainsFile=${built.meta.initialDomainCandidatesFile}\n`,
   );
   built.app.runner.start();
   const shutdown = (): void => {

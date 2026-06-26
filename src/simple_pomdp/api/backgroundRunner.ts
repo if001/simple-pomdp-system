@@ -24,16 +24,29 @@ export const createSimplePomdpBackgroundRunner = (
   let inFlight: Promise<void> | null = null;
 
   const runOnce = async (): Promise<void> => {
+    process.stdout.write(
+      "[simple-pomdp-runner] ------------- cycle start ---------------- \n",
+    );
     if (options.shouldRun && !(await options.shouldRun())) {
+      process.stdout.write("[simple-pomdp-runner] skipped by shouldRun\n");
       return;
     }
+    process.stdout.write(
+      `[simple-pomdp-runner] cycle start botId=${options.botId} threads=${options.threadIds.length}\n`,
+    );
     for (const threadId of options.threadIds) {
+      process.stdout.write(
+        `[simple-pomdp-runner] dispatch threadId=${threadId} userId=${options.userId}\n`,
+      );
       await service.dispatchNext({
         botId: options.botId,
         threadId,
         userId: options.userId,
       });
     }
+    process.stdout.write(
+      "[simple-pomdp-runner] ------------- cycle complete ---------------- \n",
+    );
   };
 
   const tick = (): void => {
@@ -43,7 +56,9 @@ export const createSimplePomdpBackgroundRunner = (
     inFlight = runOnce()
       .catch((error: unknown) => {
         const message =
-          error instanceof Error ? (error.stack ?? error.message) : String(error);
+          error instanceof Error
+            ? (error.stack ?? error.message)
+            : String(error);
         process.stdout.write(`[simple-pomdp-background-error] ${message}\n`);
       })
       .finally(() => {
@@ -57,11 +72,15 @@ export const createSimplePomdpBackgroundRunner = (
         return;
       }
       running = true;
+      process.stdout.write(
+        `[simple-pomdp-runner] start pollMs=${pollMs} threads=${options.threadIds.join(",")}\n`,
+      );
       timer = setInterval(tick, pollMs);
       tick();
     },
     stop() {
       running = false;
+      process.stdout.write("[simple-pomdp-runner] stop\n");
       if (timer) {
         clearInterval(timer);
         timer = null;
