@@ -1,6 +1,8 @@
 import { join } from "node:path";
+import { ChatOllama } from "@langchain/ollama";
 import {
   createFileCachedDialoguePlanningModel,
+  createLangChainExploitResearchAgent,
   createFileInteractionLogStore,
   createFileQueueBackgroundInputSink,
   createFileTurnRecordStore,
@@ -9,6 +11,7 @@ import {
   createOllamaDialoguePlanningModel,
   createSimplePomdpBackgroundApp,
   getFileQueueStatus,
+  type KnowledgeAccessService,
   type SimplePomdpBackgroundAppOptions,
 } from "../index";
 
@@ -32,6 +35,41 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
   const initialDomainCandidates = await loadInitialDomainCandidates(
     initialDomainCandidatesFile,
   );
+  const knowledgeAccess = loadKnowledgeAccess();
+  const knowledgePool = knowledgeAccess.createPostgresPool(
+    requiredFromEnv(env, "POSTGRES_URL"),
+  );
+  const knowledgeDb = knowledgeAccess.createDrizzleClient(knowledgePool);
+  const knowledgeEmbeddingProvider =
+    new knowledgeAccess.OllamaEmbeddingProvider(
+      requiredFromEnv(env, "OLLAMA_EMBEDDING_BASE_URL"),
+      requiredFromEnv(env, "OLLAMA_EMBEDDING_MODEL"),
+    );
+  const knowledgeRepository = new knowledgeAccess.PostgresKnowledgeRepository(
+    knowledgeDb,
+    knowledgeEmbeddingProvider,
+  );
+  const knowledgeWebClient = new knowledgeAccess.SimpleWebClient(
+    requiredFromEnv(env, "SIMPLE_CLIENT_BASE_URL"),
+  );
+  const knowledgeAnalysisModel =
+    knowledgeAccess.createOllamaKnowledgeAccessAnalysisModel(
+      requiredFromEnv(env, "OLLAMA_BASE_URL"),
+      requiredFromEnv(env, "OLLAMA_CHAT_MODEL"),
+      env.OLLAMA_API_KEY,
+    );
+  const knowledgeAccessService = knowledgeAccess.createKnowledgeAccessService({
+    repository: knowledgeRepository,
+    webClient: knowledgeWebClient,
+    analysisModel: knowledgeAnalysisModel,
+  }) as KnowledgeAccessService;
+  const exploitAgentModel = new ChatOllama({
+    baseUrl: requiredFromEnv(env, "OLLAMA_BASE_URL"),
+    model: requiredFromEnv(env, "OLLAMA_CHAT_MODEL"),
+    ...(env.OLLAMA_API_KEY
+      ? { headers: { authorization: `Bearer ${env.OLLAMA_API_KEY}` } }
+      : {}),
+  });
   const options: SimplePomdpBackgroundAppOptions = {
     botId,
     threadIds,
@@ -122,6 +160,10 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       "SIMPLE_POMDP_INTERACTION_END_HOUR",
       24,
     ),
+    exploitResearchAgent: createLangChainExploitResearchAgent({
+      model: exploitAgentModel,
+      knowledgeAccessService,
+    }),
     initialDomainCandidates,
     shouldRun: async () => {
       const status = await getFileQueueStatus(queueFilePath);
@@ -147,6 +189,31 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
     },
   };
 };
+
+const loadKnowledgeAccess = (): {
+  createPostgresPool: (connectionString: string) => unknown;
+  createDrizzleClient: (pool: unknown) => unknown;
+  OllamaEmbeddingProvider: new (
+    baseUrl: string,
+    model: string,
+    fetchFn?: typeof fetch,
+  ) => unknown;
+  PostgresKnowledgeRepository: new (
+    db: unknown,
+    embeddingProvider: unknown,
+  ) => unknown;
+  SimpleWebClient: new (baseUrl: string, fetchFn?: typeof fetch) => unknown;
+  createOllamaKnowledgeAccessAnalysisModel: (
+    baseUrl: string,
+    model: string,
+    apiKey?: string,
+  ) => unknown;
+  createKnowledgeAccessService: (options: {
+    repository: unknown;
+    webClient: unknown;
+    analysisModel: unknown;
+  }) => unknown;
+} => require("../../../knowledge-access/lib");
 
 const main = async (): Promise<void> => {
   const built = await buildSimplePomdpBackgroundAppFromEnv(process.env);

@@ -28,7 +28,6 @@ export interface TopicBelief {
   positiveCount: number;
   negativeCount: number;
   lastObservedAtIso: string;
-  note: string;
 }
 
 export interface UserBelief {
@@ -83,18 +82,12 @@ export interface InteractionLog {
   status: InteractionStatus;
   observation: InteractionObservation;
   feedbackNote: string;
+  supportSummary?: string;
+  articleIds?: string[];
+  sourceUrls?: string[];
   observeWindowTurns: number;
   createdAtIso: string;
   resolvedAtIso?: string;
-}
-
-export interface BeliefUpdate {
-  targetDomain: string;
-  targetTopic?: string;
-  interestDelta: -1 | 0 | 1;
-  confidenceDelta: -1 | 0 | 1;
-  initiationToleranceDelta: -1 | 0 | 1;
-  note: string;
 }
 
 export interface BackgroundInput {
@@ -102,6 +95,88 @@ export interface BackgroundInput {
   threadId: string;
   text: string;
   sourceInteractionId: string;
+}
+
+export interface KnowledgeAccessSearchResultItem {
+  articleId: string;
+  score: number;
+  title: string;
+  summary: string;
+  tags: string[];
+  url: string;
+}
+
+export interface KnowledgeAccessSavedArticle {
+  id: string;
+  url: string;
+  title: string;
+  summary: string;
+  content: string;
+  tags: string[];
+  rawMarkdown: string;
+  createdAt: Date;
+}
+
+export interface KnowledgeAccessWebListItem {
+  rank: number;
+  title: string;
+  url: string;
+  snippet?: string;
+  publishedDate?: string;
+}
+
+export interface KnowledgeAccessWebPage {
+  url: string;
+  title: string;
+  markdown: string;
+}
+
+export interface KnowledgeAccessService {
+  searchSavedKnowledge(input: {
+    query: string;
+    limit?: number;
+    minScore?: number;
+  }): Promise<KnowledgeAccessSearchResultItem[]>;
+  getSavedArticle(input: {
+    articleId?: string;
+    url?: string;
+  }): Promise<KnowledgeAccessSavedArticle | null>;
+  webList(input: {
+    query: string;
+    limit: number;
+  }): Promise<KnowledgeAccessWebListItem[]>;
+  webPage(input: {
+    url: string;
+  }): Promise<KnowledgeAccessWebPage>;
+  saveWebKnowledge(input: {
+    botId: string;
+    threadId?: string;
+    url: string;
+  }): Promise<{
+    articleId: string;
+    title: string;
+    summary: string;
+    url: string;
+  }>;
+}
+
+export interface ExploitResearchResult {
+  summary: string;
+  articleIds: string[];
+  sourceUrls: string[];
+  notes: string[];
+}
+
+export interface ExploitResearchAgent {
+  research(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    targetDomain: string;
+    targetTopic?: string;
+    recentTurns: string[];
+    belief: UserBelief;
+  }): Promise<ExploitResearchResult>;
 }
 
 export interface DialoguePlanningModel {

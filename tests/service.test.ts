@@ -80,10 +80,16 @@ test("dispatchNext observes user reaction and updates belief on next cycle", asy
 
   assert.equal(dispatched.length, 1);
   const belief = await service.listUserBelief({ userId: "discord-user" });
-  assert.equal(belief?.topics[0]?.domain, "IT");
-  assert.equal(belief?.topics[0]?.topic, "implementation");
-  assert.equal(belief?.topics[0]?.interest, 1);
-  assert.equal(belief?.topics[0]?.positiveCount, 1);
+  const domainBelief = belief?.topics.find(
+    (topic) => topic.domain === "IT" && topic.topic === undefined,
+  );
+  const topicBelief = belief?.topics.find(
+    (topic) => topic.domain === "IT" && topic.topic === "implementation",
+  );
+  assert.equal(domainBelief?.interest, 1);
+  assert.equal(domainBelief?.positiveCount, 1);
+  assert.equal(topicBelief?.interest, 1);
+  assert.equal(topicBelief?.positiveCount, 1);
   assert.equal(belief?.initiationPositiveCount, 1);
   const logs = await interactionLogStore.listRecentInteractionLogs({
     userId: "discord-user",
@@ -91,6 +97,88 @@ test("dispatchNext observes user reaction and updates belief on next cycle", asy
   });
   assert.equal(logs[0]?.observation, "positive");
   assert.equal(logs[0]?.status, "resolved");
+});
+
+test("existing domain and topic beliefs are updated in place without duplication", async () => {
+  const interactionLogStore = createInMemoryInteractionLogStore();
+  const userBeliefStore = createInMemoryUserBeliefStore({
+    userId: "discord-user",
+    topics: [
+      {
+        id: "domain_IT",
+        domain: "IT",
+        interest: 1,
+        confidence: "medium",
+        attemptCount: 2,
+        positiveCount: 1,
+        negativeCount: 0,
+        lastObservedAtIso: "2026-06-14T00:00:00.000Z",
+      },
+      {
+        id: "topic_IT_implementation",
+        domain: "IT",
+        topic: "implementation",
+        interest: 1,
+        confidence: "medium",
+        attemptCount: 2,
+        positiveCount: 1,
+        negativeCount: 0,
+        lastObservedAtIso: "2026-06-14T00:00:00.000Z",
+      },
+    ],
+    initiationTolerance: "medium",
+    initiationPositiveCount: 1,
+    initiationNegativeCount: 0,
+    initiationNoResponseCount: 0,
+    updatedAtIso: "2026-06-14T00:00:00.000Z",
+  });
+  const turnRecordStore = createInMemoryTurnRecordStore([
+    assistantTurn("ao", "thread-1", "2026-06-14T01:00:00.000Z", "補足です。"),
+    userTurn("ao", "thread-1", "2026-06-14T01:01:00.000Z", "それは引き続き気になります"),
+  ]);
+  await interactionLogStore.saveInteractionLog({
+    id: "log-existing",
+    userId: "discord-user",
+    botId: "ao",
+    threadId: "thread-1",
+    candidateKind: "exploit",
+    probeType: "exploit",
+    targetDomain: "IT",
+    targetTopic: "implementation",
+    message: "実装に関する補足を共有したい",
+    status: "pending",
+    observation: "unknown",
+    feedbackNote: "",
+    observeWindowTurns: 3,
+    createdAtIso: "2026-06-14T01:00:00.000Z",
+  });
+
+  const service = createTestService({
+    turnRecordStore,
+    userBeliefStore,
+    interactionLogStore,
+    now: () => new Date("2026-06-14T02:00:00.000Z"),
+  });
+
+  await service.dispatchNext({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  const belief = await service.listUserBelief({ userId: "discord-user" });
+  const domainBeliefs = belief?.topics.filter(
+    (topic) => topic.domain === "IT" && topic.topic === undefined,
+  );
+  const topicBeliefs = belief?.topics.filter(
+    (topic) => topic.domain === "IT" && topic.topic === "implementation",
+  );
+  assert.equal(domainBeliefs?.length, 1);
+  assert.equal(topicBeliefs?.length, 1);
+  assert.equal(domainBeliefs?.[0]?.attemptCount, 3);
+  assert.equal(topicBeliefs?.[0]?.attemptCount, 3);
+  assert.equal(domainBeliefs?.[0]?.positiveCount, 2);
+  assert.equal(topicBeliefs?.[0]?.positiveCount, 2);
 });
 
 test("dispatchNext expires pending interaction after observe window without user response", async () => {
@@ -287,6 +375,44 @@ test("dispatchNext skips outside configured interaction hours", async () => {
   assert.equal(plannerCalled, false);
 });
 
+test("dispatchNext uses exploit research result in instruction and interaction log", async () => {
+  const enqueued: BackgroundInput[] = [];
+  const interactionLogStore = createInMemoryInteractionLogStore();
+  const service = createTestService({
+    turnRecordStore: createInMemoryTurnRecordStore([
+      userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "TypeScript 最近どう？"),
+    ]),
+    userBeliefStore: createInMemoryUserBeliefStore(),
+    interactionLogStore,
+    backgroundInputSink: { enqueue: async (input) => enqueued.push(input) },
+    now: () => new Date("2026-06-14T12:00:00.000Z"),
+    exploitResearchAgent: {
+      research: async () => ({
+        summary: "TypeScript の新しい更新点として型推論と設定周りの改善がある。",
+        articleIds: ["article_1"],
+        sourceUrls: ["https://example.com/ts"],
+        notes: ["saved knowledge と web を併用した"],
+      }),
+    },
+  });
+
+  await service.dispatchNext({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  assert.equal(enqueued.length, 1);
+  assert.match(enqueued[0]?.text ?? "", /調査結果: TypeScript の新しい更新点/);
+  assert.match(enqueued[0]?.text ?? "", /articleIds: article_1/);
+  const logs = await interactionLogStore.listRecentInteractionLogs({
+    userId: "discord-user",
+    limit: 10,
+  });
+  assert.equal(logs[0]?.supportSummary, "TypeScript の新しい更新点として型推論と設定周りの改善がある。");
+  assert.deepEqual(logs[0]?.articleIds, ["article_1"]);
+});
+
 function createTestService(
   options: Omit<SimplePomdpSystemOptions, "plannerModel"> & {
     plannerModel?: DialoguePlanningModel;
@@ -301,20 +427,6 @@ function createTestService(
 function createDefaultPlannerModel(): DialoguePlanningModel {
   return {
     generateJson: async (_systemPrompt, userPrompt) => {
-      if (userPrompt.includes("\"currentBelief\"")) {
-        return {
-          updates: [
-            {
-              targetDomain: "IT",
-              targetTopic: "implementation",
-              interestDelta: 1,
-              confidenceDelta: 1,
-              initiationToleranceDelta: 0,
-              note: "明示的に関心を示した",
-            },
-          ],
-        };
-      }
       if (userPrompt.includes("\"message\":") && userPrompt.includes("\"observedWindow\":")) {
         return {
           observation: "positive",

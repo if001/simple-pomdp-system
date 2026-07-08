@@ -1,7 +1,6 @@
 import {
   BackgroundInput,
   BackgroundInputSink,
-  BeliefUpdate,
   DialogueCandidate,
   DialoguePlanningModel,
   InteractionLog,
@@ -13,7 +12,8 @@ import {
   UserBelief,
   UserBeliefStore,
   TopicBelief,
-  InitiationTolerance,
+  ExploitResearchAgent,
+  ExploitResearchResult,
 } from "../domain/types";
 
 export interface SimplePomdpSystemService {
@@ -42,6 +42,7 @@ export interface SimplePomdpSystemOptions {
   maxPendingInteractions?: number;
   interactionStartHour?: number;
   interactionEndHour?: number;
+  exploitResearchAgent?: ExploitResearchAgent;
   now?: () => Date;
 }
 
@@ -53,17 +54,6 @@ interface CandidatePlanningResult {
 interface ObservationResult {
   observation?: InteractionObservation;
   feedbackNote?: string;
-}
-
-interface BeliefUpdateResult {
-  updates?: Array<{
-    targetDomain?: string;
-    targetTopic?: string;
-    interestDelta?: -1 | 0 | 1 | number;
-    confidenceDelta?: -1 | 0 | 1 | number;
-    initiationToleranceDelta?: -1 | 0 | 1 | number;
-    note?: string;
-  }>;
 }
 
 class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
@@ -126,7 +116,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     );
     await this.refreshBeliefFromPendingInteractions(input);
 
-    const belief =
+    let belief =
       normalizeStoredBelief(
         await this.options.userBeliefStore.getUserBelief(input.userId),
       ) ?? createDefaultBelief(input.userId, this.now().toISOString());
@@ -253,11 +243,28 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       `candidate selected threadId=${input.threadId} kind=${selected.kind}${selected.targetDomain ? ` domain=${selected.targetDomain}` : ""}${selected.targetTopic ? ` topic=${selected.targetTopic}` : ""} benefit=${selected.expectedBenefit} risk=${selected.expectedRisk}`,
     );
 
+    const exploitResearch =
+      selected.kind === "exploit" &&
+      selected.targetDomain &&
+      this.options.exploitResearchAgent
+        ? await this.options.exploitResearchAgent.research({
+            botId: input.botId,
+            threadId: input.threadId,
+            userId: input.userId,
+            targetDomain: selected.targetDomain,
+            ...(selected.targetTopic
+              ? { targetTopic: selected.targetTopic }
+              : {}),
+            recentTurns: formatRecentTurns(recentTurns),
+            belief,
+          })
+        : null;
+
     const interactionId = `pomdp_${sanitize(input.userId)}_${this.now().toISOString()}`;
     const backgroundInput: BackgroundInput = {
       botId: input.botId,
       threadId: input.threadId,
-      text: buildBackgroundInstruction(selected),
+      text: buildBackgroundInstruction(selected, exploitResearch),
       sourceInteractionId: interactionId,
     };
     if (this.options.backgroundInputSink) {
@@ -276,6 +283,13 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       status: "pending",
       observation: "unknown",
       feedbackNote: "",
+      ...(exploitResearch
+        ? {
+            supportSummary: exploitResearch.summary,
+            articleIds: exploitResearch.articleIds,
+            sourceUrls: exploitResearch.sourceUrls,
+          }
+        : {}),
       observeWindowTurns: this.observeWindowTurns,
       createdAtIso: this.now().toISOString(),
     });
@@ -307,7 +321,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     logSimplePomdp(
       `refresh start threadId=${input.threadId} pendingInteractions=${pending.length}`,
     );
-    const belief =
+    let belief =
       normalizeStoredBelief(
         await this.options.userBeliefStore.getUserBelief(input.userId),
       ) ?? createDefaultBelief(input.userId, this.now().toISOString());
@@ -345,17 +359,8 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       logSimplePomdp(
         `observe resolved threadId=${input.threadId} interactionId=${log.id} observation=${observation.observation}`,
       );
-      const updates = await inferBeliefUpdates(
-        this.options.plannerModel,
+      const nextBelief = applyInteractionObservationToBelief(
         belief,
-        completedLog,
-      );
-      logSimplePomdp(
-        `belief updates threadId=${input.threadId} interactionId=${log.id} updates=${updates.length}`,
-      );
-      const nextBelief = applyBeliefUpdates(
-        belief,
-        updates,
         completedLog,
         this.now().toISOString(),
       );
@@ -363,6 +368,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       logSimplePomdp(
         `belief saved threadId=${input.threadId} interactionId=${log.id} topics=${nextBelief.topics.length} initiationTolerance=${nextBelief.initiationTolerance}`,
       );
+      belief = nextBelief;
     }
   }
 
@@ -397,7 +403,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       ].join(" "),
       JSON.stringify({
         instruction: [
-          "userBelief, recentTurns, recentInteractionLogs, optionalContext を読んでください。",
+          "userBeliefSummary, recentTurns, recentInteractionLogs, optionalContext を読んでください。",
           "plannerSignals には、最後のユーザー入力や最後の agent 介入からの経過時間バケット、直近の do_nothing 回数、直近の no_response 回数が入っています。",
           "initialDomainCandidates は、初対面で広く探るための幅広い領域候補です。",
           "attemptCount が少ない topic や未登場の domain は breadth explore の優先候補です。",
@@ -410,7 +416,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           "- candidates: DialogueCandidate[]",
           "- selectedIndex: number",
         ].join(" "),
-        userBelief: input.belief,
+        userBeliefSummary: summarizeBeliefForPlanner(input.belief),
         recentTurns: formatRecentTurns(input.recentTurns),
         recentInteractionLogs: input.interactionLogs.map((log) => ({
           candidateKind: log.candidateKind,
@@ -532,153 +538,40 @@ const observeInteraction = async (
   };
 };
 
-const inferBeliefUpdates = async (
-  plannerModel: DialoguePlanningModel,
+const applyInteractionObservationToBelief = (
   belief: UserBelief,
-  log: InteractionLog,
-): Promise<BeliefUpdate[]> => {
-  const parsed = await plannerModel.generateJson<BeliefUpdateResult>(
-    [
-      "あなたはユーザー belief の差分更新を提案します。",
-      "現在の belief と、直近の InteractionLog の観測結果を読み、必要な update だけを返してください。",
-      "無反応の場合は、topic interest を下げないでください。明示的な negative だけを topic の強いマイナスとして扱ってください。",
-      "updates は targetDomain, optional targetTopic, interestDelta, confidenceDelta, initiationToleranceDelta, note を持てます。",
-      "JSON のみを返してください。",
-    ].join(" "),
-    JSON.stringify({
-      instruction: [
-        "currentBelief と interactionLog を読んでください。",
-        "必要な belief update だけを返してください。",
-        "updates は空配列でも構いません。",
-      ].join(" "),
-      currentBelief: belief,
-      interactionLog: {
-        candidateKind: log.candidateKind,
-        probeType: log.probeType ?? "breadth",
-        targetDomain: log.targetDomain ?? "",
-        targetTopic: log.targetTopic ?? "",
-        message: log.message,
-        observation: log.observation,
-        feedbackNote: log.feedbackNote,
-      },
-    }),
-  );
-  return (parsed.updates ?? [])
-    .map((item) => normalizeBeliefUpdate(item))
-    .filter((item): item is BeliefUpdate => item !== null);
-};
-
-const normalizeBeliefUpdate = (value: {
-  targetDomain?: string;
-  targetTopic?: string;
-  interestDelta?: number;
-  confidenceDelta?: number;
-  initiationToleranceDelta?: number;
-  note?: string;
-}): BeliefUpdate | null => {
-  const targetDomain = value.targetDomain?.trim();
-  const targetTopic = value.targetTopic?.trim();
-  const note = value.note?.trim();
-  if (!targetDomain || !note) {
-    return null;
-  }
-  return {
-    targetDomain,
-    ...(targetTopic ? { targetTopic } : {}),
-    interestDelta: clampDelta(value.interestDelta),
-    confidenceDelta: clampDelta(value.confidenceDelta),
-    initiationToleranceDelta: clampDelta(value.initiationToleranceDelta),
-    note,
+  interactionLog: InteractionLog,
+  nowIso: string,
+): UserBelief => {
+  let next = {
+    ...belief,
+    topics: [...belief.topics],
+    updatedAtIso: nowIso,
   };
-};
 
-const applyBeliefUpdates = (
-  belief: UserBelief,
-  updates: BeliefUpdate[],
-  interactionLog: InteractionLog,
-  nowIso: string,
-): UserBelief => {
-  let next = { ...belief, topics: [...belief.topics], updatedAtIso: nowIso };
-  let toleranceScore = toleranceToScore(next.initiationTolerance);
-  for (const update of updates) {
-    const index = next.topics.findIndex(
-      (topic) =>
-        topic.domain === update.targetDomain &&
-        (topic.topic ?? "") === (update.targetTopic ?? ""),
-    );
-    const current = index >= 0 ? next.topics[index] : undefined;
-    const topic: TopicBelief = {
-      id:
-        current?.id ??
-        `topic_${sanitize(update.targetDomain)}_${sanitize(update.targetTopic ?? "general")}`,
-      domain: update.targetDomain,
-      ...(update.targetTopic ? { topic: update.targetTopic } : {}),
-      interest: clampInterest((current?.interest ?? 0) + update.interestDelta),
-      confidence: shiftConfidence(
-        current?.confidence ?? "low",
-        update.confidenceDelta,
-      ),
-      attemptCount: current?.attemptCount ?? 0,
-      positiveCount: current?.positiveCount ?? 0,
-      negativeCount: current?.negativeCount ?? 0,
-      lastObservedAtIso: nowIso,
-      note: update.note,
-    };
-    if (index >= 0) {
-      next.topics[index] = topic;
-    } else {
-      next.topics.push(topic);
-    }
-    toleranceScore += update.initiationToleranceDelta;
-  }
-  next = applyObservationCounts(next, updates, interactionLog, nowIso);
-  next.initiationTolerance = scoreToTolerance(toleranceScore);
-  return next;
-};
-
-const applyObservationCounts = (
-  belief: UserBelief,
-  updates: BeliefUpdate[],
-  interactionLog: InteractionLog,
-  nowIso: string,
-): UserBelief => {
-  const next = { ...belief, topics: [...belief.topics] };
-  const targetKeys = new Set([
-    ...updates.map((update) =>
-      toTopicKey(update.targetDomain, update.targetTopic),
-    ),
-    ...(interactionLog.targetDomain
-      ? [toTopicKey(interactionLog.targetDomain, interactionLog.targetTopic)]
-      : []),
-  ]);
-  for (const key of targetKeys) {
-    const target = parseTopicKey(key);
-    const index = next.topics.findIndex(
-      (topic) =>
-        topic.domain === target.domain &&
-        (topic.topic ?? "") === (target.topic ?? ""),
-    );
-    const current =
-      index >= 0
-        ? next.topics[index]
-        : createObservedTopicBelief(
-            target.domain,
-            target.topic,
-            nowIso,
-            interactionLog.feedbackNote,
-          );
-    const updated = incrementTopicObservationCount(
-      current,
+  if (interactionLog.targetDomain) {
+    next = upsertObservedBelief(
+      next,
+      interactionLog.targetDomain,
+      undefined,
       interactionLog.observation,
       nowIso,
     );
-    if (index >= 0) {
-      next.topics[index] = updated;
-    } else {
-      next.topics.push(updated);
-    }
   }
-  return incrementUserObservationCount(next, interactionLog.observation);
+
+  if (shouldTrackTopicBelief(interactionLog)) {
+    next = upsertObservedBelief(
+      next,
+      interactionLog.targetDomain as string,
+      interactionLog.targetTopic,
+      interactionLog.observation,
+      nowIso,
+    );
+  }
+
+  next = incrementUserObservationCount(next, interactionLog.observation);
+  next = pruneBelief(next);
+  return next;
 };
 
 const logSimplePomdp = (message: string): void => {
@@ -699,7 +592,6 @@ const createObservedTopicBelief = (
   domain: string,
   topic: string | undefined,
   nowIso: string,
-  note: string,
 ): TopicBelief => ({
   id: `topic_${sanitize(domain)}_${sanitize(topic ?? "general")}`,
   domain,
@@ -710,7 +602,6 @@ const createObservedTopicBelief = (
   positiveCount: 0,
   negativeCount: 0,
   lastObservedAtIso: nowIso,
-  note: note || topic || domain,
 });
 
 const normalizeStoredBelief = (belief: UserBelief | null): UserBelief | null =>
@@ -805,7 +696,46 @@ const toHourBucket = (iso: string | undefined, now: Date): string => {
   return `${hours}h`;
 };
 
-const buildBackgroundInstruction = (candidate: DialogueCandidate): string =>
+const summarizeBeliefForPlanner = (belief: UserBelief) => ({
+  initiationTolerance: belief.initiationTolerance,
+  initiationPositiveCount: belief.initiationPositiveCount,
+  initiationNegativeCount: belief.initiationNegativeCount,
+  initiationNoResponseCount: belief.initiationNoResponseCount,
+  trackedDomainCount: belief.topics.filter((topic) => !topic.topic).length,
+  trackedTopicCount: belief.topics.filter((topic) => topic.topic).length,
+  domains: belief.topics
+    .filter((topic) => !topic.topic)
+    .sort(compareBeliefImportance)
+    .slice(0, 8)
+    .map((topic) => ({
+      domain: topic.domain,
+      interest: topic.interest,
+      confidence: topic.confidence,
+      attemptCount: topic.attemptCount,
+      positiveCount: topic.positiveCount,
+      negativeCount: topic.negativeCount,
+      lastObservedAtIso: topic.lastObservedAtIso,
+    })),
+  topics: belief.topics
+    .filter((topic) => topic.topic)
+    .sort(compareBeliefImportance)
+    .slice(0, 12)
+    .map((topic) => ({
+      domain: topic.domain,
+      topic: topic.topic,
+      interest: topic.interest,
+      confidence: topic.confidence,
+      attemptCount: topic.attemptCount,
+      positiveCount: topic.positiveCount,
+      negativeCount: topic.negativeCount,
+      lastObservedAtIso: topic.lastObservedAtIso,
+    })),
+});
+
+const buildBackgroundInstruction = (
+  candidate: DialogueCandidate,
+  exploitResearch: ExploitResearchResult | null,
+): string =>
   [
     "これはユーザーからの入力ではなく、background からの介入指示です。",
     "次にユーザーへ送る日本語メッセージを 1 通だけ作成してください。",
@@ -816,6 +746,18 @@ const buildBackgroundInstruction = (candidate: DialogueCandidate): string =>
     `意図: ${candidate.intent}`,
     ...(candidate.reason ? [`理由: ${candidate.reason}`] : []),
     ...(candidate.draftMessage ? [`叩き台: ${candidate.draftMessage}`] : []),
+    ...(exploitResearch?.summary
+      ? [`調査結果: ${exploitResearch.summary}`]
+      : []),
+    ...(exploitResearch?.articleIds.length
+      ? [`articleIds: ${exploitResearch.articleIds.join(", ")}`]
+      : []),
+    ...(exploitResearch?.sourceUrls.length
+      ? [`sourceUrls: ${exploitResearch.sourceUrls.join(", ")}`]
+      : []),
+    ...(exploitResearch?.notes.length
+      ? [`notes: ${exploitResearch.notes.join(" / ")}`]
+      : []),
     "制約:",
     "- 内部事情や background system の存在は説明しないでください。",
     "- ユーザーの代わりに答えないでください。",
@@ -879,16 +821,6 @@ const isPendingInteraction = (log: InteractionLog): boolean =>
   ((log.status === undefined || log.status === null) &&
     log.observation === "unknown");
 
-const clampDelta = (value: number | undefined): -1 | 0 | 1 => {
-  if (value === 1) {
-    return 1;
-  }
-  if (value === -1) {
-    return -1;
-  }
-  return 0;
-};
-
 const clampHour = (value: number): number => {
   if (!Number.isFinite(value)) {
     return 0;
@@ -937,20 +869,6 @@ const shiftConfidence = (
   );
 };
 
-const toleranceToScore = (value: InitiationTolerance): number => {
-  switch (value) {
-    case "low":
-      return 0;
-    case "medium":
-      return 1;
-    case "high":
-      return 2;
-    case "unknown":
-    default:
-      return 1;
-  }
-};
-
 const incrementTopicObservationCount = (
   topic: TopicBelief,
   observation: InteractionObservation,
@@ -963,14 +881,109 @@ const incrementTopicObservationCount = (
   lastObservedAtIso: nowIso,
 });
 
-const toTopicKey = (domain: string, topic?: string): string =>
-  `${domain}::${topic ?? ""}`;
+const shouldTrackTopicBelief = (interactionLog: InteractionLog): boolean =>
+  Boolean(
+    interactionLog.targetDomain &&
+      interactionLog.targetTopic &&
+      interactionLog.observation !== "unknown" &&
+      interactionLog.observation !== "no_response",
+  );
 
-const parseTopicKey = (value: string): { domain: string; topic?: string } => {
-  const [domain, topic] = value.split("::", 2);
+const upsertObservedBelief = (
+  belief: UserBelief,
+  domain: string,
+  topic: string | undefined,
+  observation: InteractionObservation,
+  nowIso: string,
+): UserBelief => {
+  const index = belief.topics.findIndex(
+    (item) => item.domain === domain && (item.topic ?? "") === (topic ?? ""),
+  );
+  const current =
+    index >= 0
+      ? belief.topics[index]
+      : createObservedTopicBelief(domain, topic, nowIso);
+  const updated = applyObservationToTopicBelief(
+    incrementTopicObservationCount(current, observation, nowIso),
+    observation,
+  );
+  const topics = [...belief.topics];
+  if (index >= 0) {
+    topics[index] = updated;
+  } else {
+    topics.push(updated);
+  }
   return {
-    domain,
-    ...(topic ? { topic } : {}),
+    ...belief,
+    topics,
+    updatedAtIso: nowIso,
+  };
+};
+
+const applyObservationToTopicBelief = (
+  topic: TopicBelief,
+  observation: InteractionObservation,
+): TopicBelief => ({
+  ...topic,
+  interest: clampInterest(topic.interest + getInterestDelta(observation)),
+  confidence: shiftConfidence(
+    topic.confidence,
+    getConfidenceDelta(observation),
+  ),
+});
+
+const getInterestDelta = (
+  observation: InteractionObservation,
+): -1 | 0 | 1 => {
+  if (observation === "positive") {
+    return 1;
+  }
+  if (observation === "negative") {
+    return -1;
+  }
+  return 0;
+};
+
+const getConfidenceDelta = (
+  observation: InteractionObservation,
+): -1 | 0 | 1 => {
+  if (
+    observation === "positive" ||
+    observation === "negative" ||
+    observation === "neutral" ||
+    observation === "no_response"
+  ) {
+    return 1;
+  }
+  return 0;
+};
+
+const compareBeliefImportance = (left: TopicBelief, right: TopicBelief): number => {
+  const score =
+    beliefImportanceScore(right) - beliefImportanceScore(left);
+  if (score !== 0) {
+    return score;
+  }
+  return (
+    Date.parse(right.lastObservedAtIso) - Date.parse(left.lastObservedAtIso)
+  );
+};
+
+const beliefImportanceScore = (topic: TopicBelief): number =>
+  topic.positiveCount * 4 +
+  topic.attemptCount +
+  Math.abs(topic.interest) * 2 -
+  topic.negativeCount * 2;
+
+const pruneBelief = (belief: UserBelief): UserBelief => {
+  const domainBeliefs = belief.topics.filter((topic) => !topic.topic);
+  const topicBeliefs = belief.topics
+    .filter((topic) => topic.topic)
+    .sort(compareBeliefImportance)
+    .slice(0, 16);
+  return {
+    ...belief,
+    topics: [...domainBeliefs, ...topicBeliefs],
   };
 };
 
@@ -986,16 +999,6 @@ const incrementUserObservationCount = (
   initiationNoResponseCount:
     belief.initiationNoResponseCount + (observation === "no_response" ? 1 : 0),
 });
-
-const scoreToTolerance = (value: number): InitiationTolerance => {
-  if (value <= 0) {
-    return "low";
-  }
-  if (value >= 2) {
-    return "high";
-  }
-  return "medium";
-};
 
 const sanitize = (value: string): string =>
   value.replace(/[^a-zA-Z0-9_-]/g, "_");

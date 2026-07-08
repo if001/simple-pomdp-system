@@ -9,3 +9,4 @@ export * from "./simple_pomdp/infrastructure/fileQueueBackgroundInputSink";
 export * from "./simple_pomdp/infrastructure/loadInitialDomainCandidates";
 export * from "./simple_pomdp/infrastructure/ollama/client";
 export * from "./simple_pomdp/infrastructure/ollama/fileCachedModel";
+export * from "./simple_pomdp/infrastructure/langchain/exploitResearchAgent";
