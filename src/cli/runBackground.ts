@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { ChatOllama } from "@langchain/ollama";
+import { createQueueApi, FileQueueStore } from "@chat-agent/queue";
 import {
   createFileCachedDialoguePlanningModel,
   createLangChainExploitResearchAgent,
@@ -29,6 +30,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
   const userId = env.SIMPLE_POMDP_USER_ID ?? "discord-user";
   const storeDir = env.SIMPLE_POMDP_STORE_DIR ?? "data/simple-pomdp-system";
   const queueFilePath = requiredFromEnv(env, "SIMPLE_POMDP_QUEUE_FILE");
+  const queueApi = createQueueApi(new FileQueueStore(queueFilePath));
   const initialDomainCandidatesFile =
     env.SIMPLE_POMDP_INITIAL_DOMAIN_CANDIDATES_FILE ??
     join(__dirname, "../../domains/initial_domains.txt");
@@ -114,8 +116,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       },
     ),
     backgroundInputSink: createFileQueueBackgroundInputSink({
-      filePath: queueFilePath,
-      channelId: requiredFromEnv(env, "MENTION_CHANNEL_ID"),
+      queueApi,
       ...(env.SIMPLE_POMDP_QUEUE_DEBUG_LOG_FILE
         ? { debugLogFilePath: env.SIMPLE_POMDP_QUEUE_DEBUG_LOG_FILE }
         : {}),
@@ -166,7 +167,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
     }),
     initialDomainCandidates,
     shouldRun: async () => {
-      const status = await getFileQueueStatus(queueFilePath);
+      const status = await getFileQueueStatus(queueApi);
       const busy =
         status.counts.locked > 0 || status.counts.readyByType.user > 0;
       if (busy) {
