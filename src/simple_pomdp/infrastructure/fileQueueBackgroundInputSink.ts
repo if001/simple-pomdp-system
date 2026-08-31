@@ -38,6 +38,7 @@ export const createFileQueueBackgroundInputSink = (
         channelId: thread.channelId,
         text: input.text,
         source: "simple_pomdp",
+        sourceInteractionId: input.sourceInteractionId,
         dueAt: new Date(),
       });
       lastEnqueuedAtByInteractionId.set(input.sourceInteractionId, now);
