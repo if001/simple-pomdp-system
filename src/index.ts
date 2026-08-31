@@ -2,7 +2,6 @@ export * from "./simple_pomdp/domain/types";
 export * from "./simple_pomdp/api/service";
 export * from "./simple_pomdp/api/backgroundApp";
 export * from "./simple_pomdp/api/backgroundRunner";
-export * from "./simple_pomdp/infrastructure/fileTurnRecordStore";
 export * from "./simple_pomdp/infrastructure/fileUserBeliefStore";
 export * from "./simple_pomdp/infrastructure/fileInteractionLogStore";
 export * from "./simple_pomdp/infrastructure/fileQueueBackgroundInputSink";

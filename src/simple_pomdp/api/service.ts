@@ -9,7 +9,7 @@ import {
   InteractionObservation,
   PomdpContextProvider,
   TurnRecord,
-  TurnRecordStore,
+  TurnRecordReader,
   UserBelief,
   UserBeliefStore,
   TopicBelief,
@@ -18,7 +18,6 @@ import {
 } from "../domain/types";
 
 export interface SimplePomdpSystemService {
-  ingestTurnRecord(input: TurnRecord): Promise<void>;
   listUserBelief(input: { userId: string }): Promise<UserBelief | null>;
   dispatchNext(input: {
     botId: string;
@@ -28,7 +27,7 @@ export interface SimplePomdpSystemService {
 }
 
 export interface SimplePomdpSystemOptions {
-  turnRecordStore: TurnRecordStore;
+  turnRecordReader: TurnRecordReader;
   userBeliefStore: UserBeliefStore;
   interactionLogStore: InteractionLogStore;
   plannerModel: DialoguePlanningModel;
@@ -94,13 +93,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     this.initialDomainCandidates = (options.initialDomainCandidates ?? [])
       .map((value) => value.trim())
       .filter((value) => value.length > 0);
-  }
-
-  async ingestTurnRecord(input: TurnRecord): Promise<void> {
-    await this.options.turnRecordStore.appendTurnRecord(input);
-    logSimplePomdp(
-      `ingested turn botId=${input.botId} threadId=${input.threadId} messages=${input.messages.length} createdAt=${input.createdAtIso}`,
-    );
   }
 
   async listUserBelief(input: { userId: string }): Promise<UserBelief | null> {
@@ -181,7 +173,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     }
 
     const recentTurns =
-      await this.options.turnRecordStore.listRecentTurnRecords({
+      await this.options.turnRecordReader.listRecentTurnRecords({
         botId: input.botId,
         threadId: input.threadId,
         limit: this.recentTurnLimit,
@@ -337,7 +329,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       normalizeStoredBelief(
         await this.options.userBeliefStore.getUserBelief(input.userId),
       ) ?? createDefaultBelief(input.userId, this.now().toISOString());
-    const turns = await this.options.turnRecordStore.listRecentTurnRecords({
+    const turns = await this.options.turnRecordReader.listRecentTurnRecords({
       botId: input.botId,
       threadId: input.threadId,
       limit: this.recentTurnLimit + this.observeWindowTurns + 2,

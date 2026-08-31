@@ -10,7 +10,7 @@ import {
   InteractionLog,
   InteractionLogStore,
   TurnRecord,
-  TurnRecordStore,
+  TurnRecordReader,
   UserBelief,
   UserBeliefStore,
 } from "../src/simple_pomdp/domain/types";
@@ -18,7 +18,7 @@ import {
 test("dispatchNext applies a dialogue decision and enqueues a background instruction", async () => {
   const enqueued: BackgroundInput[] = [];
   const service = createTestService({
-    turnRecordStore: createInMemoryTurnRecordStore([
+    turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最近は実装の話題が多いです"),
     ]),
     userBeliefStore: createInMemoryUserBeliefStore(),
@@ -44,7 +44,7 @@ test("dispatchNext applies a dialogue decision and enqueues a background instruc
 test("dispatchNext observes user reaction and updates belief on next cycle", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
   const userBeliefStore = createInMemoryUserBeliefStore();
-  const turnRecordStore = createInMemoryTurnRecordStore([
+  const turnRecordReader = createInMemoryTurnRecordReader([
     assistantTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最初の補足です。"),
     userTurn("ao", "thread-1", "2026-06-14T00:01:00.000Z", "その方向はかなり興味があります"),
   ]);
@@ -66,7 +66,7 @@ test("dispatchNext observes user reaction and updates belief on next cycle", asy
   });
 
   const service = createTestService({
-    turnRecordStore,
+    turnRecordReader,
     userBeliefStore,
     interactionLogStore,
     now: () => new Date("2026-06-14T02:00:00.000Z"),
@@ -132,7 +132,7 @@ test("existing domain and topic beliefs are updated in place without duplication
     initiationNoResponseCount: 0,
     updatedAtIso: "2026-06-14T00:00:00.000Z",
   });
-  const turnRecordStore = createInMemoryTurnRecordStore([
+  const turnRecordReader = createInMemoryTurnRecordReader([
     assistantTurn("ao", "thread-1", "2026-06-14T01:00:00.000Z", "補足です。"),
     userTurn("ao", "thread-1", "2026-06-14T01:01:00.000Z", "それは引き続き気になります"),
   ]);
@@ -154,7 +154,7 @@ test("existing domain and topic beliefs are updated in place without duplication
   });
 
   const service = createTestService({
-    turnRecordStore,
+    turnRecordReader,
     userBeliefStore,
     interactionLogStore,
     now: () => new Date("2026-06-14T02:00:00.000Z"),
@@ -184,7 +184,7 @@ test("existing domain and topic beliefs are updated in place without duplication
 test("dispatchNext expires pending interaction after observe window without user response", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
   const userBeliefStore = createInMemoryUserBeliefStore();
-  const turnRecordStore = createInMemoryTurnRecordStore([
+  const turnRecordReader = createInMemoryTurnRecordReader([
     assistantTurn("ao", "thread-1", "2026-06-14T00:01:00.000Z", "補足を続けます。"),
     assistantTurn("ao", "thread-1", "2026-06-14T00:02:00.000Z", "もう一点あります。"),
     assistantTurn("ao", "thread-1", "2026-06-14T00:03:00.000Z", "以上です。"),
@@ -207,7 +207,7 @@ test("dispatchNext expires pending interaction after observe window without user
   });
 
   const service = createTestService({
-    turnRecordStore,
+    turnRecordReader,
     userBeliefStore,
     interactionLogStore,
     maxPendingInteractions: 10,
@@ -244,7 +244,7 @@ test("dispatchNext expires pending interaction after observe window without user
 test("dispatchNext expires pending interaction after timeout even without enough turns", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
   const userBeliefStore = createInMemoryUserBeliefStore();
-  const turnRecordStore = createInMemoryTurnRecordStore([]);
+  const turnRecordReader = createInMemoryTurnRecordReader([]);
   await interactionLogStore.saveInteractionLog({
     id: "log-3",
     userId: "discord-user",
@@ -263,7 +263,7 @@ test("dispatchNext expires pending interaction after timeout even without enough
   });
 
   const service = createTestService({
-    turnRecordStore,
+    turnRecordReader,
     userBeliefStore,
     interactionLogStore,
     pendingTimeoutMs: 60 * 60 * 1000,
@@ -306,12 +306,12 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
       resolvedAtIso: "2026-06-14T01:00:00.000Z",
     },
   ]);
-  const turnRecordStore = createInMemoryTurnRecordStore([
+  const turnRecordReader = createInMemoryTurnRecordReader([
     userTurn("ao", "thread-1", "2026-06-14T01:00:00.000Z", "こんにちは"),
   ]);
   let capturedPrompt = "";
   const service = createTestService({
-    turnRecordStore,
+    turnRecordReader,
     userBeliefStore: createInMemoryUserBeliefStore(),
     interactionLogStore,
     now: () => new Date("2026-06-14T04:00:00.000Z"),
@@ -354,7 +354,7 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
 test("dispatchNext skips outside configured interaction hours", async () => {
   let plannerCalled = false;
   const service = createTestService({
-    turnRecordStore: createInMemoryTurnRecordStore([
+    turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最近どう？"),
     ]),
     userBeliefStore: createInMemoryUserBeliefStore(),
@@ -387,7 +387,7 @@ test("dispatchNext uses exploit research result in instruction and interaction l
   const enqueued: BackgroundInput[] = [];
   const interactionLogStore = createInMemoryInteractionLogStore();
   const service = createTestService({
-    turnRecordStore: createInMemoryTurnRecordStore([
+    turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "TypeScript 最近どう？"),
     ]),
     userBeliefStore: createInMemoryUserBeliefStore(),
@@ -452,12 +452,9 @@ function createDefaultPlannerModel(): DialoguePlanningModel {
   };
 }
 
-function createInMemoryTurnRecordStore(initial: TurnRecord[] = []): TurnRecordStore {
+function createInMemoryTurnRecordReader(initial: TurnRecord[] = []): TurnRecordReader {
   const items = [...initial];
   return {
-    appendTurnRecord: async (turn) => {
-      items.push(turn);
-    },
     listRecentTurnRecords: async ({ botId, threadId, limit }) =>
       items.filter((turn) => turn.botId === botId && turn.threadId === threadId).slice(-limit),
   };
@@ -499,6 +496,7 @@ function userTurn(
   return {
     botId,
     threadId,
+    kind: "human",
     createdAtIso,
     messages: [{ role: "user", content, timestampIso: createdAtIso }],
   };
@@ -513,6 +511,7 @@ function assistantTurn(
   return {
     botId,
     threadId,
+    kind: "proactive",
     createdAtIso,
     messages: [{ role: "assistant", content, timestampIso: createdAtIso }],
   };

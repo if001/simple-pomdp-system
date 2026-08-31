@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import { ChatOllama } from "@langchain/ollama";
 import { createQueueApi, FileQueueStore } from "@chat-agent/queue";
+import { createPostgresTurnRecordReader } from "@chat-agent/memory-system";
 import {
   createFileCachedDialoguePlanningModel,
   createLangChainExploitResearchAgent,
   createFileInteractionLogStore,
   createFileQueueBackgroundInputSink,
-  createFileTurnRecordStore,
   createFileUserBeliefStore,
   loadInitialDomainCandidates,
   createOllamaDialoguePlanningModel,
@@ -81,14 +81,9 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       "SIMPLE_POMDP_BACKGROUND_POLL_MS",
       60_000,
     ),
-    turnRecordStore: createFileTurnRecordStore({
-      baseDir: join(storeDir, "turn-records"),
-      maxTurnsPerThread: optionalNumberFromEnv(
-        env,
-        "SIMPLE_POMDP_MAX_TURNS_PER_THREAD",
-        200,
-      ),
-    }),
+    turnRecordReader: createPostgresTurnRecordReader(
+      requiredFromEnv(env, "POSTGRES_URL"),
+    ),
     userBeliefStore: createFileUserBeliefStore({
       baseDir: join(storeDir, "beliefs"),
     }),
