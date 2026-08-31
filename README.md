@@ -12,9 +12,9 @@ At runtime it:
 
 1. reads belief and recent turns
 2. loads broad initial domain candidates for breadth exploration
-3. generates `DialogueCandidate`s
-4. mixes broad random exploration with refine/exploit candidates
-5. selects one candidate or `do_nothing`
+3. builds a compact situation summary with the current time and recent interactions
+4. returns one `DialogueDecision`: explore, refine, exploit, or `do_nothing`
+5. treats no response as ambiguous context rather than negative interest
 6. enqueues a background instruction for the main agent
 7. later observes user reaction and updates belief
 

@@ -1,7 +1,8 @@
+import { describe } from "node:test";
 import {
   BackgroundInput,
   BackgroundInputSink,
-  DialogueCandidate,
+  DialogueDecision,
   DialoguePlanningModel,
   InteractionLog,
   InteractionLogStore,
@@ -46,14 +47,17 @@ export interface SimplePomdpSystemOptions {
   now?: () => Date;
 }
 
-interface CandidatePlanningResult {
-  candidates?: DialogueCandidate[];
-  selectedIndex?: number;
-}
-
 interface ObservationResult {
   observation?: InteractionObservation;
   feedbackNote?: string;
+}
+
+interface RawDialogueDecision {
+  kind?: string;
+  targetDomain?: string;
+  targetTopic?: string;
+  messageIntent?: string;
+  reason?: string;
 }
 
 class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
@@ -185,51 +189,62 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     const context = this.options.contextProvider
       ? await this.options.contextProvider.getContext(input)
       : {};
+    const planningNow = this.now();
     const plannerSignals = buildPlannerSignals(
       recentTurns,
       interactionLogs,
-      this.now(),
+      planningNow,
       input.botId,
       input.threadId,
     );
     logSimplePomdp(
-      `planning input threadId=${input.threadId} recentTurns=${recentTurns.length} contextNotes=${context.notes?.length ?? 0} userInactivity=${plannerSignals.hoursSinceLastUserTurnBucket} agentInactivity=${plannerSignals.hoursSinceLastAgentInitiatedBucket} doNothing=${plannerSignals.recentDoNothingCount} noResponse=${plannerSignals.recentNoResponseCount}`,
+      `planning input threadId=${input.threadId} recentTurns=${recentTurns.length} contextNotes=${context.notes?.length ?? 0} userInactivity=${plannerSignals.hoursSinceLastUserTurnBucket} agentInactivity=${plannerSignals.hoursSinceLastAgentInitiatedBucket}`,
     );
-    const planning = await this.planCandidates({
+    const decision = await this.decideNextInteraction({
       belief,
       recentTurns,
       interactionLogs: interactionLogs.slice(-this.interactionLogLimit),
       context,
       plannerSignals,
       initialDomainCandidates: this.initialDomainCandidates,
+      now: planningNow,
     });
     logSimplePomdp(
-      `planning result threadId=${input.threadId} candidates=${planning.candidates?.length ?? 0} selectedIndex=${planning.selectedIndex ?? -1}`,
+      `planning result threadId=${input.threadId} kind=${decision?.kind ?? "invalid"}`,
     );
-    console.log("planning", planning);
-    const selected = selectCandidate(planning);
-    if (!selected) {
+    if (decision?.kind == "do_nothing") {
       logSimplePomdp(
-        `dispatch skip threadId=${input.threadId} reason=no_valid_candidate`,
+        "decision\n" +
+          `kind:${decision.kind}\n` +
+          `reason: ${decision?.reason}\n`,
+      );
+    } else {
+      logSimplePomdp(
+        `decision\n` +
+          `kind:${decision.kind}\n` +
+          `reason: ${decision?.reason}\n` +
+          `targetDomain:${decision?.targetDomain}\n` +
+          `targetTopic:${decision?.targetTopic}`,
+      );
+    }
+
+    if (!decision) {
+      logSimplePomdp(
+        `dispatch skip threadId=${input.threadId} reason=no_valid_decision`,
       );
       return [];
     }
-    if (selected.kind === "do_nothing") {
+    if (decision.kind === "do_nothing") {
       await this.options.interactionLogStore.saveInteractionLog({
         id: `pomdp_${sanitize(input.userId)}_${this.now().toISOString()}`,
         userId: input.userId,
         botId: input.botId,
         threadId: input.threadId,
-        candidateKind: selected.kind,
-        ...(selected.probeType ? { probeType: selected.probeType } : {}),
-        ...(selected.targetDomain
-          ? { targetDomain: selected.targetDomain }
-          : {}),
-        ...(selected.targetTopic ? { targetTopic: selected.targetTopic } : {}),
-        message: selected.reason.trim(),
+        candidateKind: decision.kind,
+        message: decision.reason.trim(),
         status: "resolved",
         observation: "unknown",
-        feedbackNote: selected.reason.trim(),
+        feedbackNote: decision.reason.trim(),
         observeWindowTurns: this.observeWindowTurns,
         createdAtIso: this.now().toISOString(),
         resolvedAtIso: this.now().toISOString(),
@@ -240,20 +255,18 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       return [];
     }
     logSimplePomdp(
-      `candidate selected threadId=${input.threadId} kind=${selected.kind}${selected.targetDomain ? ` domain=${selected.targetDomain}` : ""}${selected.targetTopic ? ` topic=${selected.targetTopic}` : ""} benefit=${selected.expectedBenefit} risk=${selected.expectedRisk}`,
+      `decision selected threadId=${input.threadId} kind=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
     );
 
     const exploitResearch =
-      selected.kind === "exploit" &&
-      selected.targetDomain &&
-      this.options.exploitResearchAgent
+      decision.kind === "exploit" && this.options.exploitResearchAgent
         ? await this.options.exploitResearchAgent.research({
             botId: input.botId,
             threadId: input.threadId,
             userId: input.userId,
-            targetDomain: selected.targetDomain,
-            ...(selected.targetTopic
-              ? { targetTopic: selected.targetTopic }
+            targetDomain: decision.targetDomain,
+            ...(decision.targetTopic
+              ? { targetTopic: decision.targetTopic }
               : {}),
             recentTurns: formatRecentTurns(recentTurns),
             belief,
@@ -264,7 +277,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     const backgroundInput: BackgroundInput = {
       botId: input.botId,
       threadId: input.threadId,
-      text: buildBackgroundInstruction(selected, exploitResearch),
+      text: buildBackgroundInstruction(decision, exploitResearch),
       sourceInteractionId: interactionId,
     };
     if (this.options.backgroundInputSink) {
@@ -275,11 +288,10 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       userId: input.userId,
       botId: input.botId,
       threadId: input.threadId,
-      candidateKind: selected.kind,
-      ...(selected.probeType ? { probeType: selected.probeType } : {}),
-      ...(selected.targetDomain ? { targetDomain: selected.targetDomain } : {}),
-      ...(selected.targetTopic ? { targetTopic: selected.targetTopic } : {}),
-      message: selected.draftMessage?.trim() || selected.intent.trim(),
+      candidateKind: decision.kind,
+      targetDomain: decision.targetDomain,
+      ...(decision.targetTopic ? { targetTopic: decision.targetTopic } : {}),
+      message: decision.messageIntent.trim(),
       status: "pending",
       observation: "unknown",
       feedbackNote: "",
@@ -294,7 +306,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       createdAtIso: this.now().toISOString(),
     });
     logSimplePomdp(
-      `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} candidate=${selected.kind}${selected.targetDomain ? ` domain=${selected.targetDomain}` : ""}${selected.targetTopic ? ` topic=${selected.targetTopic}` : ""}`,
+      `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} decision=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
     );
     return [backgroundInput];
   }
@@ -372,7 +384,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     }
   }
 
-  private async planCandidates(input: {
+  private async decideNextInteraction(input: {
     belief: UserBelief;
     recentTurns: TurnRecord[];
     interactionLogs: InteractionLog[];
@@ -382,60 +394,59 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     };
     plannerSignals: PlannerSignals;
     initialDomainCandidates: string[];
-  }): Promise<CandidatePlanningResult> {
-    return this.options.plannerModel.generateJson<CandidatePlanningResult>(
-      [
-        "あなたは POMDP ベースの proactive dialogue planner です。",
-        "belief をもとに、agent からユーザーへ話しかける候補を 3 から 5 個作ってください。",
-        "候補には exploit, refine, explore, do_nothing を使えます。",
-        "do_nothing は必ず 1 つ含めてください。",
-        "各 candidate には kind, probeType, targetDomain, optional targetTopic, intent, draftMessage, expectedBenefit, expectedRisk, reason を入れてください。",
-        "explore は breadth に寄せてください。broad domain 候補からかなりランダムに選び、最近の会話と直接関係ない領域も候補に含めてください。",
-        "refine は既に反応のあった domain/topic を少し絞る候補です。",
-        "exploit は十分に方向性が見えている domain/topic に価値提供する候補です。",
-        "positiveCount がある topic は refine や exploit に寄せてください。",
+    now: Date;
+  }): Promise<DialogueDecision | null> {
+    const raw_prompt = JSON.stringify({
+      instruction: [
+        "currentSituation, userBeliefSummary, recentTurns, recentInteractions, optionalContext を読んでください。",
+        "現在の時刻・曜日は、話題を出す自然さと過去のおすすめをフォローする時期の判断にだけ使ってください。",
+        "recentInteractions の経過時間・曜日・時間帯・話題・反応を比較し、無反応の理由は仮説として扱ってください。",
+        "initialDomainCandidates は、初対面で広く探るための幅広い領域候補です。",
+        "attemptCount は試行済みかの判断にだけ使い、関心の強さとはみなさないでください。",
+        "positiveCount が高い topic は refine/exploit を優先できます。",
         "negativeCount がある topic は避けてください。",
-        //"no_response はマイナスではありません。明示的な negative だけを強いマイナスとして扱ってください。",
-        "no_responseが多い場合、do_nothingを選択してはいけません。積極的に探索を行ってください。",
-        "exploit が中心でも breadth explore を少し残してください。",
-        "その後、期待される便益がリスクを上回る候補を 1 つ選び、selectedIndex で返してください。",
-        "JSON のみを返してください。",
+        "最終的な DialogueDecision を 1 件だけ返してください。",
       ].join(" "),
-      JSON.stringify({
-        instruction: [
-          "userBeliefSummary, recentTurns, recentInteractionLogs, optionalContext を読んでください。",
-          "plannerSignals には、最後のユーザー入力や最後の agent 介入からの経過時間バケット、直近の do_nothing 回数、直近の no_response 回数が入っています。",
-          "initialDomainCandidates は、初対面で広く探るための幅広い領域候補です。",
-          "attemptCount が少ない topic や未登場の domain は breadth explore の優先候補です。",
-          "breadth explore では initialDomainCandidates から偏らず広く、かなりランダムに選んでください。",
-          "positiveCount が高い topic は refine/exploit を優先できます。",
+      currentSituation: buildCurrentSituation(input.now),
+      userBeliefSummary: summarizeBeliefForPlanner(input.belief),
+      recentTurns: formatRecentTurns(input.recentTurns),
+      recentInteractions: summarizeInteractionsForPlanner(
+        input.interactionLogs,
+        input.now,
+      ),
+      optionalContext: {
+        recentContextSummary: input.context.recentContextSummary
+          ? compactText(input.context.recentContextSummary, 1200)
+          : "",
+        notes: (input.context.notes ?? [])
+          .slice(-6)
+          .map((note) => compactText(note, 240)),
+      },
+      plannerSignals: input.plannerSignals,
+      initialDomainCandidates: input.initialDomainCandidates.slice(0, 24),
+    });
+    console.log("[decideNextInteraction] raw_prompt: ", raw_prompt);
+    const parsed =
+      await this.options.plannerModel.generateJson<RawDialogueDecision>(
+        [
+          "あなたは POMDP ベースの proactive dialogue planner です。",
+          "今この時点で行う判断を 1 件だけ返してください。kind は exploit, refine, explore のいずれかです。",
+          // "話しかける価値が割り込みコストを明確に上回らなければ do_nothing を選んでください。",
+          "explore は broad domain 候補から、最近の会話に偏りすぎず未知の関心を低コストに確認します。",
+          "refine は既に反応のあった domain/topic を少し絞る候補です。",
+          "exploit は十分に方向性が見えている domain/topic に価値提供する候補です。",
+          "positiveCount がある topic は refine や exploit に寄せてください。",
           "negativeCount がある topic は避けてください。",
-          "候補を 3 から 5 個作ってください。",
-          "候補が弱い場合でも do_nothing を含めてください。",
-          "次の shape で返してください:",
-          "- candidates: DialogueCandidate[]",
-          "- selectedIndex: number",
+          "no_response は関心がないことを意味しません。単独の no_response で関心や通知許容度を下げないでください。",
+          "無反応がある場合は、特定話題だけか、同じ話題の反復か、時間帯に偏るか、メッセージが重いか、材料不足かを最近の履歴から比較してください。理由を断定せず、次の判断では一度に話題・時刻・提示方法の 1 要素だけを変えてください。",
+          "異なる話題でも同じ時間帯に無反応なら待つことを、同じ話題だけが続いて無反応なら別領域の短い explore を優先してください。以前 positive だった話題の一度の無反応は関心低下とみなさないでください。",
+          "以前おすすめした場所・物・行動を尋ねる場合は、recentInteractions と recentTurns から実際におすすめした事実を確認し、経過時間と現在の曜日・時間帯が自然な場合だけ、訪れた・試したと決めつけず短く尋ねてください。",
+          "do_nothing は kind と reason、その他は kind, targetDomain, optional targetTopic, messageIntent, reason を返してください。reason には現在の状況と履歴に基づく短い判断根拠を書いてください。",
+          "JSON のみを返してください。",
         ].join(" "),
-        userBeliefSummary: summarizeBeliefForPlanner(input.belief),
-        recentTurns: formatRecentTurns(input.recentTurns),
-        recentInteractionLogs: input.interactionLogs.map((log) => ({
-          candidateKind: log.candidateKind,
-          probeType: log.probeType,
-          targetDomain: log.targetDomain,
-          targetTopic: log.targetTopic,
-          message: log.message,
-          observation: log.observation,
-          feedbackNote: log.feedbackNote,
-          createdAtIso: log.createdAtIso,
-        })),
-        optionalContext: {
-          recentContextSummary: input.context.recentContextSummary ?? "",
-          notes: input.context.notes ?? [],
-        },
-        plannerSignals: input.plannerSignals,
-        initialDomainCandidates: input.initialDomainCandidates,
-      }),
-    );
+        raw_prompt,
+      );
+    return normalizeDialogueDecision(parsed);
   }
 }
 
@@ -512,6 +523,7 @@ const observeInteraction = async (
       "observedWindow はその後 N ターンの会話履歴です。",
       "個別の user reply を特定するのではなく、この窓全体に反応が含まれるかを見てください。",
       "observation は positive, negative, neutral, no_response, unknown のいずれかです。",
+      "no_responseはネガティブなものではありません。negativeのみがネガティブとします。",
       "feedbackNote には短い自然言語の説明を返してください。",
       "JSON のみを返してください。",
     ].join(" "),
@@ -634,8 +646,6 @@ const normalizeInteractionLog = (
 interface PlannerSignals {
   hoursSinceLastUserTurnBucket: string;
   hoursSinceLastAgentInitiatedBucket: string;
-  recentDoNothingCount: number;
-  recentNoResponseCount: number;
 }
 
 const buildPlannerSignals = (
@@ -664,21 +674,12 @@ const buildPlannerSignals = (
     .map((log) => log.createdAtIso)
     .sort()
     .at(-1);
-  const threadLogs = interactionLogs.filter(
-    (log) => log.botId === botId && log.threadId === threadId,
-  );
   return {
     hoursSinceLastUserTurnBucket: toHourBucket(lastUserTimestampIso, now),
     hoursSinceLastAgentInitiatedBucket: toHourBucket(
       lastAgentInteractionIso,
       now,
     ),
-    recentDoNothingCount: threadLogs.filter(
-      (log) => log.candidateKind === "do_nothing",
-    ).length,
-    recentNoResponseCount: threadLogs.filter(
-      (log) => log.observation === "no_response",
-    ).length,
   };
 };
 
@@ -694,6 +695,74 @@ const toHourBucket = (iso: string | undefined, now: Date): string => {
     return "24h+";
   }
   return `${hours}h`;
+};
+
+const dayNames = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
+const buildCurrentSituation = (now: Date) => ({
+  localDate: `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`,
+  dayOfWeek: dayNames[now.getDay()],
+  localTime: `${pad2(now.getHours())}:${pad2(now.getMinutes())}`,
+  timeBucket: toTimeBucket(now),
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+});
+
+const summarizeInteractionsForPlanner = (logs: InteractionLog[], now: Date) =>
+  [...logs]
+    .sort(
+      (left, right) =>
+        Date.parse(right.createdAtIso) - Date.parse(left.createdAtIso),
+    )
+    .slice(0, 8)
+    .map((log) => {
+      const sentAt = new Date(log.createdAtIso);
+      return {
+        kind: log.candidateKind,
+        ...(log.targetDomain ? { domain: log.targetDomain } : {}),
+        ...(log.targetTopic ? { topic: log.targetTopic } : {}),
+        message: compactText(log.message, 240),
+        observation: log.observation,
+        ...(log.feedbackNote
+          ? { feedback: compactText(log.feedbackNote, 160) }
+          : {}),
+        elapsed: toHourBucket(log.createdAtIso, now),
+        sentDate: `${sentAt.getFullYear()}-${pad2(sentAt.getMonth() + 1)}-${pad2(sentAt.getDate())}`,
+        sentDayOfWeek: dayNames[sentAt.getDay()],
+        sentTimeBucket: toTimeBucket(sentAt),
+      };
+    });
+
+const toTimeBucket = (
+  date: Date,
+): "morning" | "daytime" | "evening" | "night" => {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 11) {
+    return "morning";
+  }
+  if (hour >= 11 && hour < 17) {
+    return "daytime";
+  }
+  if (hour >= 17 && hour < 22) {
+    return "evening";
+  }
+  return "night";
+};
+
+const pad2 = (value: number): string => value.toString().padStart(2, "0");
+
+const compactText = (value: string, maxLength: number): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxLength
+    ? normalized
+    : `${normalized.slice(0, maxLength - 1)}…`;
 };
 
 const summarizeBeliefForPlanner = (belief: UserBelief) => ({
@@ -733,19 +802,17 @@ const summarizeBeliefForPlanner = (belief: UserBelief) => ({
 });
 
 const buildBackgroundInstruction = (
-  candidate: DialogueCandidate,
+  decision: Exclude<DialogueDecision, { kind: "do_nothing" }>,
   exploitResearch: ExploitResearchResult | null,
 ): string =>
   [
     "これはユーザーからの入力ではなく、background からの介入指示です。",
     "次にユーザーへ送る日本語メッセージを 1 通だけ作成してください。",
-    `候補種別: ${candidate.kind}`,
-    ...(candidate.probeType ? [`探索種別: ${candidate.probeType}`] : []),
-    ...(candidate.targetDomain ? [`領域: ${candidate.targetDomain}`] : []),
-    ...(candidate.targetTopic ? [`話題: ${candidate.targetTopic}`] : []),
-    `意図: ${candidate.intent}`,
-    ...(candidate.reason ? [`理由: ${candidate.reason}`] : []),
-    ...(candidate.draftMessage ? [`叩き台: ${candidate.draftMessage}`] : []),
+    `判断種別: ${decision.kind}`,
+    `領域: ${decision.targetDomain}`,
+    ...(decision.targetTopic ? [`話題: ${decision.targetTopic}`] : []),
+    `意図: ${decision.messageIntent}`,
+    `理由: ${decision.reason}`,
     ...(exploitResearch?.summary
       ? [`調査結果: ${exploitResearch.summary}`]
       : []),
@@ -765,31 +832,38 @@ const buildBackgroundInstruction = (
     "- 最終的なユーザー向けメッセージ本文だけを返してください。",
   ].join("\n");
 
-const selectCandidate = (
-  result: CandidatePlanningResult,
-): DialogueCandidate | null => {
-  const candidates = (result.candidates ?? []).filter(isValidCandidate);
-  if (candidates.length === 0) {
+const normalizeDialogueDecision = (
+  value: RawDialogueDecision | null | undefined,
+): DialogueDecision | null => {
+  if (!value) {
     return null;
   }
-  const selectedIndex = Math.max(
-    0,
-    Math.min(
-      candidates.length - 1,
-      result.selectedIndex ?? candidates.length - 1,
-    ),
-  );
-  return candidates[selectedIndex] ?? null;
+  const reason = value.reason?.trim();
+  if (!reason) {
+    return null;
+  }
+  if (value.kind === "do_nothing") {
+    return { kind: "do_nothing", reason };
+  }
+  if (
+    (value.kind === "exploit" ||
+      value.kind === "refine" ||
+      value.kind === "explore") &&
+    value.targetDomain?.trim() &&
+    value.messageIntent?.trim()
+  ) {
+    return {
+      kind: value.kind,
+      targetDomain: value.targetDomain.trim(),
+      ...(value.targetTopic?.trim()
+        ? { targetTopic: value.targetTopic.trim() }
+        : {}),
+      messageIntent: value.messageIntent.trim(),
+      reason,
+    };
+  }
+  return null;
 };
-
-const isValidCandidate = (candidate: DialogueCandidate): boolean =>
-  Boolean(
-    candidate.kind &&
-      candidate.intent?.trim() &&
-      candidate.reason?.trim() &&
-      candidate.expectedBenefit &&
-      candidate.expectedRisk,
-  );
 
 const formatRecentTurns = (turns: TurnRecord[]): string[] =>
   turns
@@ -797,7 +871,11 @@ const formatRecentTurns = (turns: TurnRecord[]): string[] =>
     .filter(
       (message) => message.role === "user" || message.role === "assistant",
     )
-    .map((message) => `[${message.role}] ${message.content.trim()}`)
+    .map((message) => {
+      const timestamp = new Date(message.timestampIso);
+      const localDate = `${timestamp.getFullYear()}-${pad2(timestamp.getMonth() + 1)}-${pad2(timestamp.getDate())}`;
+      return `[${localDate} ${dayNames[timestamp.getDay()]} ${toTimeBucket(timestamp)} ${message.role}] ${compactText(message.content, 320)}`;
+    })
     .filter(Boolean)
     .slice(-12);
 
@@ -932,9 +1010,7 @@ const applyObservationToTopicBelief = (
   ),
 });
 
-const getInterestDelta = (
-  observation: InteractionObservation,
-): -1 | 0 | 1 => {
+const getInterestDelta = (observation: InteractionObservation): -1 | 0 | 1 => {
   if (observation === "positive") {
     return 1;
   }
@@ -950,17 +1026,18 @@ const getConfidenceDelta = (
   if (
     observation === "positive" ||
     observation === "negative" ||
-    observation === "neutral" ||
-    observation === "no_response"
+    observation === "neutral"
   ) {
     return 1;
   }
   return 0;
 };
 
-const compareBeliefImportance = (left: TopicBelief, right: TopicBelief): number => {
-  const score =
-    beliefImportanceScore(right) - beliefImportanceScore(left);
+const compareBeliefImportance = (
+  left: TopicBelief,
+  right: TopicBelief,
+): number => {
+  const score = beliefImportanceScore(right) - beliefImportanceScore(left);
   if (score !== 0) {
     return score;
   }
@@ -971,7 +1048,6 @@ const compareBeliefImportance = (left: TopicBelief, right: TopicBelief): number 
 
 const beliefImportanceScore = (topic: TopicBelief): number =>
   topic.positiveCount * 4 +
-  topic.attemptCount +
   Math.abs(topic.interest) * 2 -
   topic.negativeCount * 2;
 

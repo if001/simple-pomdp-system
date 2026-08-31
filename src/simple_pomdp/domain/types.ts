@@ -40,41 +40,37 @@ export interface UserBelief {
   updatedAtIso: string;
 }
 
-export type DialogueCandidateKind =
+export type DialogueDecisionKind =
   | "exploit"
   | "refine"
   | "explore"
   | "do_nothing";
-export type CandidateLevel = "low" | "medium" | "high";
+export type ActiveDialogueDecisionKind = Exclude<
+  DialogueDecisionKind,
+  "do_nothing"
+>;
 export type DialogueProbeType = "breadth" | "depth" | "exploit";
 
-export interface DialogueCandidate {
-  kind: DialogueCandidateKind;
-  probeType?: DialogueProbeType;
-  targetDomain?: string;
-  targetTopic?: string;
-  intent: string;
-  draftMessage?: string;
-  expectedBenefit: CandidateLevel;
-  expectedRisk: CandidateLevel;
-  reason: string;
-}
-
-export type InteractionObservation =
-  | "positive"
-  | "negative"
-  | "neutral"
-  | "no_response"
-  | "unknown";
-
-export type InteractionStatus = "pending" | "resolved" | "expired";
+export type DialogueDecision =
+  | {
+      kind: "do_nothing";
+      reason: string;
+    }
+  | {
+      kind: ActiveDialogueDecisionKind;
+      targetDomain: string;
+      targetTopic?: string;
+      messageIntent: string;
+      reason: string;
+    };
 
 export interface InteractionLog {
   id: string;
   userId: string;
   botId: string;
   threadId: string;
-  candidateKind: DialogueCandidateKind;
+  candidateKind: DialogueDecisionKind;
+  /** Legacy field. New decisions derive the exploration style from kind. */
   probeType?: DialogueProbeType;
   targetDomain?: string;
   targetTopic?: string;
@@ -89,6 +85,15 @@ export interface InteractionLog {
   createdAtIso: string;
   resolvedAtIso?: string;
 }
+
+export type InteractionObservation =
+  | "positive"
+  | "negative"
+  | "neutral"
+  | "no_response"
+  | "unknown";
+
+export type InteractionStatus = "pending" | "resolved" | "expired";
 
 export interface BackgroundInput {
   botId: string;

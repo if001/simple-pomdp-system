@@ -15,7 +15,7 @@ import {
   UserBeliefStore,
 } from "../src/simple_pomdp/domain/types";
 
-test("dispatchNext selects a candidate and enqueues a background instruction", async () => {
+test("dispatchNext applies a dialogue decision and enqueues a background instruction", async () => {
   const enqueued: BackgroundInput[] = [];
   const service = createTestService({
     turnRecordStore: createInMemoryTurnRecordStore([
@@ -222,6 +222,16 @@ test("dispatchNext expires pending interaction after observe window without user
 
   const belief = await service.listUserBelief({ userId: "discord-user" });
   assert.equal(belief?.initiationNoResponseCount, 1);
+  const domainBelief = belief?.topics.find(
+    (topic) => topic.domain === "IT" && topic.topic === undefined,
+  );
+  assert.equal(domainBelief?.interest, 0);
+  assert.equal(domainBelief?.confidence, "low");
+  assert.equal(domainBelief?.attemptCount, 1);
+  assert.equal(
+    belief?.topics.some((topic) => topic.topic === "testing"),
+    false,
+  );
   const logs = await interactionLogStore.listRecentInteractionLogs({
     userId: "discord-user",
     limit: 10,
@@ -309,16 +319,8 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
       generateJson: async (_systemPrompt, userPrompt) => {
         capturedPrompt = userPrompt;
         return {
-          candidates: [
-          {
-            kind: "do_nothing",
-            intent: "今は何もしない",
-            expectedBenefit: "low",
-            expectedRisk: "low",
-            reason: "まだ待つ",
-          },
-          ],
-          selectedIndex: 0,
+          kind: "do_nothing",
+          reason: "まだ待つ",
         };
       },
     },
@@ -333,7 +335,13 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
   assert.equal(dispatched.length, 0);
   assert.match(capturedPrompt, /"hoursSinceLastUserTurnBucket":"3h"/);
   assert.match(capturedPrompt, /"hoursSinceLastAgentInitiatedBucket":"4h"/);
-  assert.match(capturedPrompt, /"recentNoResponseCount":1/);
+  assert.match(capturedPrompt, /"currentSituation":\{/);
+  assert.match(capturedPrompt, /"dayOfWeek":"Sunday"/);
+  assert.match(capturedPrompt, /"timeBucket":"daytime"/);
+  assert.match(capturedPrompt, /"recentInteractions":\[/);
+  assert.match(capturedPrompt, /"observation":"no_response"/);
+  assert.match(capturedPrompt, /"elapsed":"4h"/);
+  assert.match(capturedPrompt, /"sentDate":"2026-06-14"/);
   const logs = await interactionLogStore.listRecentInteractionLogs({
     userId: "discord-user",
     limit: 10,
@@ -358,8 +366,8 @@ test("dispatchNext skips outside configured interaction hours", async () => {
       generateJson: async () => {
         plannerCalled = true;
         return {
-          candidates: [],
-          selectedIndex: 0,
+          kind: "do_nothing",
+          reason: "時間外",
         };
       },
     },
@@ -434,27 +442,11 @@ function createDefaultPlannerModel(): DialoguePlanningModel {
         };
       }
       return {
-        candidates: [
-          {
-            kind: "exploit",
-            probeType: "exploit",
-            targetDomain: "IT",
-            targetTopic: "implementation",
-            intent: "最近の実装に近い話題を短く補足する",
-            draftMessage: "最近の実装で役立ちそうな関連情報を短く共有したいです。",
-            expectedBenefit: "high",
-            expectedRisk: "low",
-            reason: "実装話題への関心が高そうだから",
-          },
-          {
-            kind: "do_nothing",
-            intent: "今は何もしない",
-            expectedBenefit: "low",
-            expectedRisk: "low",
-            reason: "様子を見る",
-          },
-        ],
-        selectedIndex: 0,
+        kind: "exploit",
+        targetDomain: "IT",
+        targetTopic: "implementation",
+        messageIntent: "最近の実装で役立ちそうな関連情報を短く共有する",
+        reason: "実装話題への関心が高そうだから",
       };
     },
   };
