@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createPostgresUserMemoryReader } from "../src/simple_pomdp/infrastructure/postgresUserMemoryReader";
 
-test("postgres user memory reader uses bot and user scope with a bounded query", async () => {
+test("postgres user memory reader shares notes across bots while isolating users", async () => {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const reader = createPostgresUserMemoryReader({
     query: async (text, values) => {
@@ -25,9 +25,10 @@ test("postgres user memory reader uses bot and user scope with a bounded query",
     limit: 5,
   });
 
-  assert.deepEqual(calls[0]?.values, ["ao", "user-1", 5]);
-  assert.match(calls[0]?.text ?? "", /where bot_id = \$1 and user_id = \$2/);
-  assert.match(calls[0]?.text ?? "", /limit \$3/);
+  assert.deepEqual(calls[0]?.values, ["user-1", 5]);
+  assert.match(calls[0]?.text ?? "", /where user_id = \$1/);
+  assert.doesNotMatch(calls[0]?.text ?? "", /bot_id/);
+  assert.match(calls[0]?.text ?? "", /limit \$2/);
   assert.deepEqual(result, [
     {
       text: "TypeScriptが好き",
