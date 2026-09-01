@@ -1,18 +1,4 @@
-export type ChatRole = "system" | "user" | "assistant";
-
-export interface TurnMessage {
-  role: ChatRole;
-  content: string;
-  timestampIso: string;
-}
-
-export interface TurnRecord {
-  id?: string;
-  botId: string;
-  threadId: string;
-  messages: TurnMessage[];
-  createdAtIso: string;
-}
+export type { TurnRecord, TurnRecordReader } from "@chat-agent/memory-system";
 
 export type TopicInterest = -2 | -1 | 0 | 1 | 2;
 export type TopicConfidence = "low" | "medium" | "high";
@@ -186,15 +172,6 @@ export interface ExploitResearchAgent {
 
 export interface DialoguePlanningModel {
   generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T>;
-}
-
-export interface TurnRecordStore {
-  appendTurnRecord(turn: TurnRecord): Promise<void>;
-  listRecentTurnRecords(input: {
-    botId: string;
-    threadId: string;
-    limit: number;
-  }): Promise<TurnRecord[]>;
 }
 
 export interface UserBeliefStore {

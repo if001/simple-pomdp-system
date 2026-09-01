@@ -9,7 +9,7 @@ import {
   InteractionObservation,
   PomdpContextProvider,
   TurnRecord,
-  TurnRecordStore,
+  TurnRecordReader,
   UserBelief,
   UserBeliefStore,
   TopicBelief,
@@ -18,7 +18,6 @@ import {
 } from "../domain/types";
 
 export interface SimplePomdpSystemService {
-  ingestTurnRecord(input: TurnRecord): Promise<void>;
   listUserBelief(input: { userId: string }): Promise<UserBelief | null>;
   dispatchNext(input: {
     botId: string;
@@ -28,7 +27,7 @@ export interface SimplePomdpSystemService {
 }
 
 export interface SimplePomdpSystemOptions {
-  turnRecordStore: TurnRecordStore;
+  turnRecordReader: TurnRecordReader;
   userBeliefStore: UserBeliefStore;
   interactionLogStore: InteractionLogStore;
   plannerModel: DialoguePlanningModel;
@@ -94,13 +93,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     this.initialDomainCandidates = (options.initialDomainCandidates ?? [])
       .map((value) => value.trim())
       .filter((value) => value.length > 0);
-  }
-
-  async ingestTurnRecord(input: TurnRecord): Promise<void> {
-    await this.options.turnRecordStore.appendTurnRecord(input);
-    logSimplePomdp(
-      `ingested turn botId=${input.botId} threadId=${input.threadId} messages=${input.messages.length} createdAt=${input.createdAtIso}`,
-    );
   }
 
   async listUserBelief(input: { userId: string }): Promise<UserBelief | null> {
@@ -181,7 +173,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     }
 
     const recentTurns =
-      await this.options.turnRecordStore.listRecentTurnRecords({
+      await this.options.turnRecordReader.listRecentTurnRecords({
         botId: input.botId,
         threadId: input.threadId,
         limit: this.recentTurnLimit,
@@ -337,7 +329,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       normalizeStoredBelief(
         await this.options.userBeliefStore.getUserBelief(input.userId),
       ) ?? createDefaultBelief(input.userId, this.now().toISOString());
-    const turns = await this.options.turnRecordStore.listRecentTurnRecords({
+    const turns = await this.options.turnRecordReader.listRecentTurnRecords({
       botId: input.botId,
       threadId: input.threadId,
       limit: this.recentTurnLimit + this.observeWindowTurns + 2,
@@ -371,6 +363,12 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       logSimplePomdp(
         `observe resolved threadId=${input.threadId} interactionId=${log.id} observation=${observation.observation}`,
       );
+      if (completedLog.observation === "no_response") {
+        logSimplePomdp(
+          `belief unchanged threadId=${input.threadId} interactionId=${log.id} reason=no_response`,
+        );
+        continue;
+      }
       const nextBelief = applyInteractionObservationToBelief(
         belief,
         completedLog,
@@ -484,22 +482,19 @@ const observeInteraction = async (
   }
 
   const subsequentTurns = turns.filter(
-    (turn) => Date.parse(turn.createdAtIso) > interactionAt,
+    (turn) =>
+      turn.kind === "human" &&
+      turn.sourceInteractionId === log.id &&
+      Date.parse(turn.createdAtIso) > interactionAt,
   );
 
   const observedTurns = subsequentTurns.slice(0, log.observeWindowTurns);
   const observedMessages = observedTurns
     .flatMap((turn) => turn.messages)
-    .filter(
-      (message) => message.role === "user" || message.role === "assistant",
-    )
+    .filter((message) => message.role === "user")
     .map((message) => `[${message.role}] ${message.content.trim()}`)
     .filter(Boolean);
-  const hasUserMessage = observedTurns.some((turn) =>
-    turn.messages.some(
-      (message) => message.role === "user" && message.content.trim().length > 0,
-    ),
-  );
+  const hasUserMessage = observedMessages.length > 0;
 
   if (!hasUserMessage && subsequentTurns.length < log.observeWindowTurns) {
     console.log("[observeInteraction] set pending");
@@ -659,6 +654,7 @@ const buildPlannerSignals = (
     (turn) => turn.botId === botId && turn.threadId === threadId,
   );
   const lastUserTimestampIso = [...threadTurns]
+    .filter((turn) => turn.kind === "human")
     .flatMap((turn) => turn.messages)
     .filter((message) => message.role === "user")
     .map((message) => message.timestampIso)
@@ -867,10 +863,16 @@ const normalizeDialogueDecision = (
 
 const formatRecentTurns = (turns: TurnRecord[]): string[] =>
   turns
-    .flatMap((turn) => turn.messages)
-    .filter(
-      (message) => message.role === "user" || message.role === "assistant",
-    )
+    .flatMap((turn) => {
+      if (turn.kind === "delegation") {
+        return [];
+      }
+      return turn.messages.filter((message) =>
+        turn.kind === "proactive"
+          ? message.role === "assistant"
+          : message.role === "user" || message.role === "assistant",
+      );
+    })
     .map((message) => {
       const timestamp = new Date(message.timestampIso);
       const localDate = `${timestamp.getFullYear()}-${pad2(timestamp.getMonth() + 1)}-${pad2(timestamp.getDate())}`;
