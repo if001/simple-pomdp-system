@@ -15,7 +15,7 @@ export interface SimplePomdpBackgroundRunner {
 }
 
 export const createSimplePomdpBackgroundRunner = (
-  service: Pick<SimplePomdpSystemService, "dispatchNext">,
+  service: Pick<SimplePomdpSystemService, "runTrigger">,
   options: SimplePomdpBackgroundRunnerOptions,
 ): SimplePomdpBackgroundRunner => {
   const pollMs = options.pollMs ?? 60_000;
@@ -23,7 +23,7 @@ export const createSimplePomdpBackgroundRunner = (
   let running = false;
   let inFlight: Promise<void> | null = null;
 
-  const runOnce = async (): Promise<void> => {
+  const executeCycle = async (): Promise<void> => {
     process.stdout.write(
       "[simple-pomdp-runner] ------------- cycle start ---------------- \n",
     );
@@ -38,10 +38,11 @@ export const createSimplePomdpBackgroundRunner = (
       process.stdout.write(
         `[simple-pomdp-runner] dispatch threadId=${threadId} userId=${options.userId}\n`,
       );
-      await service.dispatchNext({
+      await service.runTrigger({
         botId: options.botId,
         threadId,
         userId: options.userId,
+        trigger: "scheduled",
       });
     }
     process.stdout.write(
@@ -49,20 +50,27 @@ export const createSimplePomdpBackgroundRunner = (
     );
   };
 
+  const runOnce = async (): Promise<void> => {
+    if (inFlight) {
+      return inFlight;
+    }
+    inFlight = executeCycle().finally(() => {
+      inFlight = null;
+    });
+    return inFlight;
+  };
+
   const tick = (): void => {
-    if (!running || inFlight) {
+    if (!running) {
       return;
     }
-    inFlight = runOnce()
+    void runOnce()
       .catch((error: unknown) => {
         const message =
           error instanceof Error
             ? (error.stack ?? error.message)
             : String(error);
         process.stdout.write(`[simple-pomdp-background-error] ${message}\n`);
-      })
-      .finally(() => {
-        inFlight = null;
       });
   };
 

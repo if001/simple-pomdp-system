@@ -10,7 +10,7 @@ import {
   createUserMemoryContextSource,
 } from "../src/simple_pomdp/infrastructure/contextSources";
 import {
-  BackgroundInput,
+  ScheduledAgentInput,
   DialoguePlanningModel,
   InteractionLog,
   InteractionLogStore,
@@ -21,8 +21,8 @@ import {
   TopicStateStore,
 } from "../src/simple_pomdp/domain/types";
 
-test("dispatchNext applies a dialogue decision and enqueues a background instruction", async () => {
-  const enqueued: BackgroundInput[] = [];
+test("runTrigger applies a dialogue decision and enqueues a background instruction", async () => {
+  const enqueued: ScheduledAgentInput[] = [];
   const service = createTestService({
     turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最近は実装の話題が多いです"),
@@ -33,21 +33,91 @@ test("dispatchNext applies a dialogue decision and enqueues a background instruc
     now: () => new Date("2026-06-14T01:00:00.000Z"),
   });
 
-  const dispatched = await service.dispatchNext({
+  const dispatched = await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
   });
 
-  assert.equal(dispatched.length, 1);
+  assert.ok(dispatched);
+  assert.equal(dispatched.trigger, "scheduled");
   assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0]?.sourceInteractionId, dispatched.sourceInteractionId);
   assert.match(
-    dispatched[0]?.text ?? "",
+    dispatched?.text ?? "",
     /これはユーザーからの入力ではなく、background からの介入指示です。/,
   );
 });
 
-test("dispatchNext loads injected proactive context sources with planner scope", async () => {
+test("conversation trigger returns one integration instruction without enqueueing", async () => {
+  const enqueued: ScheduledAgentInput[] = [];
+  const interactionLogStore = createInMemoryInteractionLogStore();
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore,
+    backgroundInputSink: { enqueue: async (input) => enqueued.push(input) },
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+
+  const output = await service.runTrigger({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+    trigger: "conversation",
+  });
+
+  assert.ok(output);
+  assert.equal(output.trigger, "conversation");
+  assert.equal(enqueued.length, 0);
+  assert.match(output.text, /次の話題を自然に統合/);
+  const logs = await interactionLogStore.listRecentInteractionLogs({
+    userId: "discord-user",
+    limit: 10,
+  });
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]?.trigger, "conversation");
+  assert.equal(logs[0]?.id, output.sourceInteractionId);
+});
+
+test("concurrent scheduled triggers share one dispatch", async () => {
+  const enqueued: ScheduledAgentInput[] = [];
+  const interactionLogStore = createInMemoryInteractionLogStore();
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore,
+    backgroundInputSink: {
+      enqueue: async (input) => {
+        await Promise.resolve();
+        enqueued.push(input);
+      },
+    },
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+  const input = {
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  };
+
+  const [first, second] = await Promise.all([
+    runScheduled(service, input),
+    runScheduled(service, input),
+  ]);
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.sourceInteractionId, second.sourceInteractionId);
+  assert.equal(enqueued.length, 1);
+  const logs = await interactionLogStore.listRecentInteractionLogs({
+    userId: "discord-user",
+    limit: 10,
+  });
+  assert.equal(logs.length, 1);
+});
+
+test("runTrigger loads injected proactive context sources with planner scope", async () => {
   const calls: Array<{ botId: string; threadId: string; userId: string }> = [];
   let plannerPrompt = "";
   const source: ProactiveContextSource = {
@@ -72,7 +142,7 @@ test("dispatchNext loads injected proactive context sources with planner scope",
     now: () => new Date("2026-06-14T01:00:00.000Z"),
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -86,7 +156,7 @@ test("dispatchNext loads injected proactive context sources with planner scope",
   assert.deepEqual(Object.keys(source).sort(), ["load", "name"]);
 });
 
-test("dispatchNext passes an empty source context to the planner", async () => {
+test("runTrigger passes an empty source context to the planner", async () => {
   let plannerPrompt = "";
   const fallback = createDefaultPlannerModel();
   const service = createTestService({
@@ -103,7 +173,7 @@ test("dispatchNext passes an empty source context to the planner", async () => {
     now: () => new Date("2026-06-14T01:00:00.000Z"),
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -112,7 +182,7 @@ test("dispatchNext passes an empty source context to the planner", async () => {
   assert.match(plannerPrompt, /"proactiveContext":\[\]/);
 });
 
-test("dispatchNext reports a proactive context source failure by name", async () => {
+test("runTrigger reports a proactive context source failure by name", async () => {
   const service = createTestService({
     turnRecordReader: createInMemoryTurnRecordReader(),
     topicStateStore: createInMemoryTopicStateStore(),
@@ -129,7 +199,7 @@ test("dispatchNext reports a proactive context source failure by name", async ()
   });
 
   await assert.rejects(
-    service.dispatchNext({
+    runScheduled(service, {
       botId: "ao",
       threadId: "thread-1",
       userId: "discord-user",
@@ -151,6 +221,7 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
     botId: "ao",
     threadId: "thread-1",
     candidateKind: "exploit",
+    trigger: "scheduled",
     probeType: "exploit",
     targetDomain: "IT",
     targetTopic: "implementation",
@@ -184,14 +255,14 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
     },
   });
 
-  const dispatched = await service.dispatchNext({
+  const dispatched = await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
   });
 
-  assert.equal(dispatched.length, 1);
-  assert.match(dispatched[0]?.text ?? "", /判断種別: refine/);
+  assert.ok(dispatched);
+  assert.match(dispatched?.text ?? "", /判断種別: refine/);
   const state = await service.listTopicState({ userId: "discord-user" });
   assert.deepEqual(state?.topics, [
     {
@@ -233,6 +304,7 @@ test("scheduled proactive continuation updates existing topic state", async () =
     botId: "ao",
     threadId: "thread-1",
     candidateKind: "exploit",
+    trigger: "scheduled",
     probeType: "exploit",
     targetDomain: "IT",
     targetTopic: "implementation",
@@ -251,7 +323,7 @@ test("scheduled proactive continuation updates existing topic state", async () =
     now: () => new Date("2026-06-14T02:00:00.000Z"),
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -272,6 +344,7 @@ test("scheduled proactive negative reaction updates the linked InteractionLog", 
     botId: "ao",
     threadId: "thread-1",
     candidateKind: "explore",
+    trigger: "scheduled",
     targetDomain: "sports",
     targetTopic: "baseball",
     message: "野球の話題を共有する",
@@ -313,7 +386,7 @@ test("scheduled proactive negative reaction updates the linked InteractionLog", 
     },
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -336,6 +409,7 @@ test("conversation-trigger reaction uses only the linked human user evidence", a
     botId: "ao",
     threadId: "thread-1",
     candidateKind: "refine",
+    trigger: "conversation",
     targetDomain: "IT",
     targetTopic: "testing",
     message: "テストの話題を続ける",
@@ -376,13 +450,32 @@ test("conversation-trigger reaction uses only the linked human user evidence", a
       messages: [
         {
           role: "user",
-          content: "その話題には興味がありません",
+          content: "最初の質問",
           timestampIso: "2026-06-14T01:03:00.000Z",
         },
         {
           role: "assistant",
-          content: "assistant text must not become reaction evidence",
+          content: "通常回答へtestingの話題を統合した",
           timestampIso: "2026-06-14T01:03:01.000Z",
+        },
+      ],
+    },
+    {
+      botId: "ao",
+      threadId: "thread-1",
+      kind: "human",
+      sourceInteractionId: "conversation-log",
+      createdAtIso: "2026-06-14T01:04:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "その話題には興味がありません",
+          timestampIso: "2026-06-14T01:04:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "assistant text must not become reaction evidence",
+          timestampIso: "2026-06-14T01:04:01.000Z",
         },
       ],
     },
@@ -408,13 +501,14 @@ test("conversation-trigger reaction uses only the linked human user evidence", a
     },
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
   });
 
   assert.match(observedPrompt, /その話題には興味がありません/);
+  assert.doesNotMatch(observedPrompt, /最初の質問/);
   assert.doesNotMatch(observedPrompt, /internal delegation/);
   assert.doesNotMatch(observedPrompt, /unrelated human/);
   assert.doesNotMatch(observedPrompt, /assistant text/);
@@ -452,6 +546,7 @@ test("no_response updates the InteractionLog without changing state", async () =
     botId: "ao",
     threadId: "thread-1",
     candidateKind: "explore",
+    trigger: "scheduled",
     probeType: "breadth",
     targetDomain: "IT",
     targetTopic: "testing",
@@ -472,7 +567,7 @@ test("no_response updates the InteractionLog without changing state", async () =
     now: () => new Date("2026-06-14T02:00:00.000Z"),
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -489,7 +584,7 @@ test("no_response updates the InteractionLog without changing state", async () =
   assert.equal(expired?.observation, "no_response");
 });
 
-test("dispatchNext expires pending interaction after timeout even without enough turns", async () => {
+test("runTrigger expires pending interaction after timeout even without enough turns", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
   const topicStateStore = createInMemoryTopicStateStore();
   const turnRecordReader = createInMemoryTurnRecordReader([]);
@@ -499,6 +594,7 @@ test("dispatchNext expires pending interaction after timeout even without enough
     botId: "ao",
     threadId: "thread-1",
     candidateKind: "refine",
+    trigger: "scheduled",
     probeType: "depth",
     targetDomain: "IT",
     targetTopic: "release-notes",
@@ -519,7 +615,7 @@ test("dispatchNext expires pending interaction after timeout even without enough
     now: () => new Date("2026-06-14T02:00:00.000Z"),
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -543,6 +639,7 @@ test("initial state falls back to an untried explore decision", async () => {
       botId: "ao",
       threadId: "thread-1",
       candidateKind: "exploit",
+      trigger: "scheduled",
       probeType: "exploit",
       targetDomain: "IT",
       targetTopic: "implementation",
@@ -576,20 +673,17 @@ test("initial state falls back to an untried explore decision", async () => {
     },
   });
 
-  const dispatched = await service.dispatchNext({
+  const dispatched = await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
   });
 
-  assert.equal(dispatched.length, 1);
-  assert.match(dispatched[0]?.text ?? "", /判断種別: explore/);
-  assert.match(dispatched[0]?.text ?? "", /領域: music/);
-  assert.match(capturedPrompt, /"hoursSinceLastUserTurnBucket":"3h"/);
-  assert.match(capturedPrompt, /"hoursSinceLastAgentInitiatedBucket":"4h"/);
-  assert.match(capturedPrompt, /"currentSituation":\{/);
-  assert.match(capturedPrompt, /"dayOfWeek":"Sunday"/);
-  assert.match(capturedPrompt, /"timeBucket":"daytime"/);
+  assert.ok(dispatched);
+  assert.match(dispatched?.text ?? "", /判断種別: explore/);
+  assert.match(dispatched?.text ?? "", /領域: music/);
+  assert.match(capturedPrompt, /"trigger":"scheduled"/);
+  assert.doesNotMatch(capturedPrompt, /hoursSince|currentSituation|cooldown/);
   assert.match(capturedPrompt, /"proactiveContext":\[/);
   assert.match(capturedPrompt, /observation=no_response/);
   assert.match(capturedPrompt, /interaction at=2026-06-14T00:00:00.000Z/);
@@ -633,7 +727,7 @@ test("an avoided topic is rejected and replaced with an allowed explore", async 
     now: () => new Date("2026-06-14T02:00:00.000Z"),
   });
 
-  const [dispatched] = await service.dispatchNext({
+  const dispatched = await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -644,42 +738,8 @@ test("an avoided topic is rejected and replaced with an allowed explore", async 
   assert.doesNotMatch(dispatched?.text ?? "", /baseball/);
 });
 
-test("dispatchNext skips outside configured interaction hours", async () => {
-  let plannerCalled = false;
-  const service = createTestService({
-    turnRecordReader: createInMemoryTurnRecordReader([
-      userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最近どう？"),
-    ]),
-    topicStateStore: createInMemoryTopicStateStore(),
-    interactionLogStore: createInMemoryInteractionLogStore(),
-    interactionStartHour: 10,
-    interactionEndHour: 24,
-    now: () => new Date(2026, 5, 14, 9, 0, 0, 0),
-    plannerModel: {
-      generateJson: async () => {
-        plannerCalled = true;
-        return {
-          kind: "explore",
-          targetDomain: "music",
-          messageIntent: "音楽の関心を尋ねる",
-          reason: "未試行だから",
-        };
-      },
-    },
-  });
-
-  const dispatched = await service.dispatchNext({
-    botId: "ao",
-    threadId: "thread-1",
-    userId: "discord-user",
-  });
-
-  assert.equal(dispatched.length, 0);
-  assert.equal(plannerCalled, false);
-});
-
-test("dispatchNext uses exploit research result in instruction and interaction log", async () => {
-  const enqueued: BackgroundInput[] = [];
+test("runTrigger uses exploit research result in instruction and interaction log", async () => {
+  const enqueued: ScheduledAgentInput[] = [];
   const interactionLogStore = createInMemoryInteractionLogStore();
   const service = createTestService({
     turnRecordReader: createInMemoryTurnRecordReader([
@@ -709,7 +769,7 @@ test("dispatchNext uses exploit research result in instruction and interaction l
     },
   });
 
-  await service.dispatchNext({
+  await runScheduled(service, {
     botId: "ao",
     threadId: "thread-1",
     userId: "discord-user",
@@ -751,6 +811,11 @@ function createTestService(
     plannerModel: options.plannerModel ?? createDefaultPlannerModel(),
   });
 }
+
+const runScheduled = (
+  service: ReturnType<typeof createSimplePomdpSystemService>,
+  input: { botId: string; threadId: string; userId: string },
+) => service.runTrigger({ ...input, trigger: "scheduled" });
 
 function createDefaultPlannerModel(): DialoguePlanningModel {
   return {

@@ -3,7 +3,7 @@ import { QueueApi } from "@chat-agent/queue";
 import { test } from "vitest";
 import { createFileQueueBackgroundInputSink } from "../src/simple_pomdp/infrastructure/fileQueueBackgroundInputSink";
 
-test("forwards sourceInteractionId to the conversation queue", async () => {
+test("forwards one scheduled payload and deduplicates concurrent interaction IDs", async () => {
   const enqueued: unknown[] = [];
   const queueApi = {
     enqueueConversationInput: async (input: unknown) => {
@@ -13,12 +13,15 @@ test("forwards sourceInteractionId to the conversation queue", async () => {
   } as QueueApi;
   const sink = createFileQueueBackgroundInputSink({ queueApi });
 
-  await sink.enqueue({
+  const input = {
+    trigger: "scheduled" as const,
     botId: "ao",
     threadId: "channel-1:user-1",
     text: "proactive prompt",
     sourceInteractionId: "interaction-1",
-  });
+  };
+
+  await Promise.all([sink.enqueue(input), sink.enqueue(input)]);
 
   assert.deepEqual(enqueued, [
     {
