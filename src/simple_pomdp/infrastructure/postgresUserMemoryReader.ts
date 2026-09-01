@@ -15,11 +15,11 @@ export const createPostgresUserMemoryReader = (
       [
         "select note, created_at",
         "from user_notes",
-        "where bot_id = $1 and user_id = $2",
+        "where user_id = $1",
         "order by created_at desc",
-        "limit $3",
+        "limit $2",
       ].join(" "),
-      [input.botId, input.userId, input.limit],
+      [input.userId, input.limit],
     );
     return result.rows
       .filter((row) => typeof row.note === "string")
