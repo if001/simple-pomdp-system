@@ -488,7 +488,6 @@ const observeInteraction = async (
       observeWindowTurns: log.observeWindowTurns,
       observedWindow: observedMessages,
       candidateKind: log.candidateKind,
-      probeType: log.probeType ?? "breadth",
       targetDomain: log.targetDomain ?? "",
       targetTopic: log.targetTopic ?? "",
     }),
