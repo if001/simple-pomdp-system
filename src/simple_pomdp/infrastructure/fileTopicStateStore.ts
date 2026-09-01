@@ -9,26 +9,33 @@ export interface FileTopicStateStoreOptions {
 export const createFileTopicStateStore = (
   options: FileTopicStateStoreOptions,
 ): TopicStateStore => ({
-  async getTopicState(userId) {
+  async getTopicState(input) {
     try {
-      const raw = await readFile(toFilePath(options.baseDir, userId), "utf8");
+      const raw = await readFile(
+        toFilePath(options.baseDir, input.botId, input.userId),
+        "utf8",
+      );
       return JSON.parse(raw) as TopicStateSnapshot;
     } catch {
       return null;
     }
   },
-  async saveTopicState(state) {
-    await mkdir(options.baseDir, { recursive: true });
+  async saveTopicState(input) {
+    if (input.state.userId !== input.userId) {
+      throw new Error("TopicState userId does not match the requested scope");
+    }
+    const directory = join(options.baseDir, encodeKey(input.botId));
+    await mkdir(directory, { recursive: true });
     await writeFile(
-      toFilePath(options.baseDir, state.userId),
-      JSON.stringify(state, null, 2),
+      toFilePath(options.baseDir, input.botId, input.userId),
+      JSON.stringify(input.state, null, 2),
       "utf8",
     );
   },
 });
 
-const toFilePath = (baseDir: string, userId: string): string =>
-  join(baseDir, `${sanitize(userId)}.json`);
+const toFilePath = (baseDir: string, botId: string, userId: string): string =>
+  join(baseDir, encodeKey(botId), `${encodeKey(userId)}.json`);
 
-const sanitize = (value: string): string =>
-  value.replace(/[^a-zA-Z0-9_-]/g, "_");
+const encodeKey = (value: string): string =>
+  Buffer.from(value, "utf8").toString("base64url");

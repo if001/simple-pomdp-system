@@ -69,8 +69,12 @@ export const createTopicStateInteractionLogContextSource = (options: {
     name: "topic-state-interaction-log",
     async load(input) {
       const [state, logs] = await Promise.all([
-        options.topicStateReader.getTopicState(input.userId),
+        options.topicStateReader.getTopicState({
+          botId: input.botId,
+          userId: input.userId,
+        }),
         options.interactionLogReader.listRecentInteractionLogs({
+          botId: input.botId,
           userId: input.userId,
           limit,
         }),
@@ -82,10 +86,7 @@ export const createTopicStateInteractionLogContextSource = (options: {
         ),
       );
       const interactionContext = logs
-        .filter(
-          (log) =>
-            log.botId === input.botId && log.threadId === input.threadId,
-        )
+        .filter((log) => log.threadId === input.threadId)
         .slice(-limit)
         .map((log) =>
           compact(
