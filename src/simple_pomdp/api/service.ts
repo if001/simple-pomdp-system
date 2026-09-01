@@ -1,4 +1,3 @@
-import { describe } from "node:test";
 import {
   BackgroundInput,
   BackgroundInputSink,
@@ -7,7 +6,7 @@ import {
   InteractionLog,
   InteractionLogStore,
   InteractionObservation,
-  PomdpContextProvider,
+  ProactiveContextSource,
   TurnRecord,
   TurnRecordReader,
   UserBelief,
@@ -31,9 +30,9 @@ export interface SimplePomdpSystemOptions {
   userBeliefStore: UserBeliefStore;
   interactionLogStore: InteractionLogStore;
   plannerModel: DialoguePlanningModel;
+  contextSources: ProactiveContextSource[];
   initialDomainCandidates?: string[];
   backgroundInputSink?: BackgroundInputSink;
-  contextProvider?: PomdpContextProvider;
   recentTurnLimit?: number;
   interactionLogLimit?: number;
   observeWindowTurns?: number;
@@ -112,7 +111,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     );
     await this.refreshBeliefFromPendingInteractions(input);
 
-    let belief =
+    const belief =
       normalizeStoredBelief(
         await this.options.userBeliefStore.getUserBelief(input.userId),
       ) ?? createDefaultBelief(input.userId, this.now().toISOString());
@@ -178,9 +177,10 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         threadId: input.threadId,
         limit: this.recentTurnLimit,
       });
-    const context = this.options.contextProvider
-      ? await this.options.contextProvider.getContext(input)
-      : {};
+    const proactiveContext = await loadProactiveContext(
+      this.options.contextSources,
+      input,
+    );
     const planningNow = this.now();
     const plannerSignals = buildPlannerSignals(
       recentTurns,
@@ -190,13 +190,10 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       input.threadId,
     );
     logSimplePomdp(
-      `planning input threadId=${input.threadId} recentTurns=${recentTurns.length} contextNotes=${context.notes?.length ?? 0} userInactivity=${plannerSignals.hoursSinceLastUserTurnBucket} agentInactivity=${plannerSignals.hoursSinceLastAgentInitiatedBucket}`,
+      `planning input threadId=${input.threadId} recentTurns=${recentTurns.length} contextItems=${proactiveContext.length} userInactivity=${plannerSignals.hoursSinceLastUserTurnBucket} agentInactivity=${plannerSignals.hoursSinceLastAgentInitiatedBucket}`,
     );
     const decision = await this.decideNextInteraction({
-      belief,
-      recentTurns,
-      interactionLogs: interactionLogs.slice(-this.interactionLogLimit),
-      context,
+      proactiveContext,
       plannerSignals,
       initialDomainCandidates: this.initialDomainCandidates,
       now: planningNow,
@@ -204,27 +201,26 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     logSimplePomdp(
       `planning result threadId=${input.threadId} kind=${decision?.kind ?? "invalid"}`,
     );
-    if (decision?.kind == "do_nothing") {
-      logSimplePomdp(
-        "decision\n" +
-          `kind:${decision.kind}\n` +
-          `reason: ${decision?.reason}\n`,
-      );
-    } else {
-      logSimplePomdp(
-        `decision\n` +
-          `kind:${decision.kind}\n` +
-          `reason: ${decision?.reason}\n` +
-          `targetDomain:${decision?.targetDomain}\n` +
-          `targetTopic:${decision?.targetTopic}`,
-      );
-    }
-
     if (!decision) {
       logSimplePomdp(
         `dispatch skip threadId=${input.threadId} reason=no_valid_decision`,
       );
       return [];
+    }
+    if (decision.kind == "do_nothing") {
+      logSimplePomdp(
+        "decision\n" +
+          `kind:${decision.kind}\n` +
+          `reason: ${decision.reason}\n`,
+      );
+    } else {
+      logSimplePomdp(
+        `decision\n` +
+          `kind:${decision.kind}\n` +
+          `reason: ${decision.reason}\n` +
+          `targetDomain:${decision.targetDomain}\n` +
+          `targetTopic:${decision.targetTopic}`,
+      );
     }
     if (decision.kind === "do_nothing") {
       await this.options.interactionLogStore.saveInteractionLog({
@@ -383,22 +379,16 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
   }
 
   private async decideNextInteraction(input: {
-    belief: UserBelief;
-    recentTurns: TurnRecord[];
-    interactionLogs: InteractionLog[];
-    context: {
-      recentContextSummary?: string;
-      notes?: string[];
-    };
+    proactiveContext: string[];
     plannerSignals: PlannerSignals;
     initialDomainCandidates: string[];
     now: Date;
   }): Promise<DialogueDecision | null> {
     const raw_prompt = JSON.stringify({
       instruction: [
-        "currentSituation, userBeliefSummary, recentTurns, recentInteractions, optionalContext を読んでください。",
+        "currentSituation と proactiveContext を読んでください。",
         "現在の時刻・曜日は、話題を出す自然さと過去のおすすめをフォローする時期の判断にだけ使ってください。",
-        "recentInteractions の経過時間・曜日・時間帯・話題・反応を比較し、無反応の理由は仮説として扱ってください。",
+        "proactiveContext 内の interaction の時刻・話題・反応を比較し、無反応の理由は仮説として扱ってください。",
         "initialDomainCandidates は、初対面で広く探るための幅広い領域候補です。",
         "attemptCount は試行済みかの判断にだけ使い、関心の強さとはみなさないでください。",
         "positiveCount が高い topic は refine/exploit を優先できます。",
@@ -406,20 +396,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         "最終的な DialogueDecision を 1 件だけ返してください。",
       ].join(" "),
       currentSituation: buildCurrentSituation(input.now),
-      userBeliefSummary: summarizeBeliefForPlanner(input.belief),
-      recentTurns: formatRecentTurns(input.recentTurns),
-      recentInteractions: summarizeInteractionsForPlanner(
-        input.interactionLogs,
-        input.now,
-      ),
-      optionalContext: {
-        recentContextSummary: input.context.recentContextSummary
-          ? compactText(input.context.recentContextSummary, 1200)
-          : "",
-        notes: (input.context.notes ?? [])
-          .slice(-6)
-          .map((note) => compactText(note, 240)),
-      },
+      proactiveContext: input.proactiveContext,
       plannerSignals: input.plannerSignals,
       initialDomainCandidates: input.initialDomainCandidates.slice(0, 24),
     });
@@ -438,7 +415,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           "no_response は関心がないことを意味しません。単独の no_response で関心や通知許容度を下げないでください。",
           "無反応がある場合は、特定話題だけか、同じ話題の反復か、時間帯に偏るか、メッセージが重いか、材料不足かを最近の履歴から比較してください。理由を断定せず、次の判断では一度に話題・時刻・提示方法の 1 要素だけを変えてください。",
           "異なる話題でも同じ時間帯に無反応なら待つことを、同じ話題だけが続いて無反応なら別領域の短い explore を優先してください。以前 positive だった話題の一度の無反応は関心低下とみなさないでください。",
-          "以前おすすめした場所・物・行動を尋ねる場合は、recentInteractions と recentTurns から実際におすすめした事実を確認し、経過時間と現在の曜日・時間帯が自然な場合だけ、訪れた・試したと決めつけず短く尋ねてください。",
+          "以前おすすめした場所・物・行動を尋ねる場合は、proactiveContext から実際におすすめした事実を確認し、経過時間と現在の曜日・時間帯が自然な場合だけ、訪れた・試したと決めつけず短く尋ねてください。",
           "do_nothing は kind と reason、その他は kind, targetDomain, optional targetTopic, messageIntent, reason を返してください。reason には現在の状況と履歴に基づく短い判断根拠を書いてください。",
           "JSON のみを返してください。",
         ].join(" "),
@@ -451,6 +428,26 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
 export const createSimplePomdpSystemService = (
   options: SimplePomdpSystemOptions,
 ): SimplePomdpSystemService => new DefaultSimplePomdpSystemService(options);
+
+const loadProactiveContext = async (
+  sources: ProactiveContextSource[],
+  input: { botId: string; threadId: string; userId: string },
+): Promise<string[]> => {
+  const context: string[] = [];
+  for (const source of sources) {
+    try {
+      const loaded = await source.load(input);
+      context.push(...loaded.filter((item) => item.trim().length > 0));
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Proactive context source "${source.name}" failed: ${detail}`,
+        { cause: error },
+      );
+    }
+  }
+  return context;
+};
 
 const observeInteraction = async (
   plannerModel: DialoguePlanningModel,
@@ -711,31 +708,6 @@ const buildCurrentSituation = (now: Date) => ({
   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 });
 
-const summarizeInteractionsForPlanner = (logs: InteractionLog[], now: Date) =>
-  [...logs]
-    .sort(
-      (left, right) =>
-        Date.parse(right.createdAtIso) - Date.parse(left.createdAtIso),
-    )
-    .slice(0, 8)
-    .map((log) => {
-      const sentAt = new Date(log.createdAtIso);
-      return {
-        kind: log.candidateKind,
-        ...(log.targetDomain ? { domain: log.targetDomain } : {}),
-        ...(log.targetTopic ? { topic: log.targetTopic } : {}),
-        message: compactText(log.message, 240),
-        observation: log.observation,
-        ...(log.feedbackNote
-          ? { feedback: compactText(log.feedbackNote, 160) }
-          : {}),
-        elapsed: toHourBucket(log.createdAtIso, now),
-        sentDate: `${sentAt.getFullYear()}-${pad2(sentAt.getMonth() + 1)}-${pad2(sentAt.getDate())}`,
-        sentDayOfWeek: dayNames[sentAt.getDay()],
-        sentTimeBucket: toTimeBucket(sentAt),
-      };
-    });
-
 const toTimeBucket = (
   date: Date,
 ): "morning" | "daytime" | "evening" | "night" => {
@@ -760,42 +732,6 @@ const compactText = (value: string, maxLength: number): string => {
     ? normalized
     : `${normalized.slice(0, maxLength - 1)}…`;
 };
-
-const summarizeBeliefForPlanner = (belief: UserBelief) => ({
-  initiationTolerance: belief.initiationTolerance,
-  initiationPositiveCount: belief.initiationPositiveCount,
-  initiationNegativeCount: belief.initiationNegativeCount,
-  initiationNoResponseCount: belief.initiationNoResponseCount,
-  trackedDomainCount: belief.topics.filter((topic) => !topic.topic).length,
-  trackedTopicCount: belief.topics.filter((topic) => topic.topic).length,
-  domains: belief.topics
-    .filter((topic) => !topic.topic)
-    .sort(compareBeliefImportance)
-    .slice(0, 8)
-    .map((topic) => ({
-      domain: topic.domain,
-      interest: topic.interest,
-      confidence: topic.confidence,
-      attemptCount: topic.attemptCount,
-      positiveCount: topic.positiveCount,
-      negativeCount: topic.negativeCount,
-      lastObservedAtIso: topic.lastObservedAtIso,
-    })),
-  topics: belief.topics
-    .filter((topic) => topic.topic)
-    .sort(compareBeliefImportance)
-    .slice(0, 12)
-    .map((topic) => ({
-      domain: topic.domain,
-      topic: topic.topic,
-      interest: topic.interest,
-      confidence: topic.confidence,
-      attemptCount: topic.attemptCount,
-      positiveCount: topic.positiveCount,
-      negativeCount: topic.negativeCount,
-      lastObservedAtIso: topic.lastObservedAtIso,
-    })),
-});
 
 const buildBackgroundInstruction = (
   decision: Exclude<DialogueDecision, { kind: "do_nothing" }>,

@@ -6,6 +6,8 @@ export * from "./simple_pomdp/infrastructure/fileUserBeliefStore";
 export * from "./simple_pomdp/infrastructure/fileInteractionLogStore";
 export * from "./simple_pomdp/infrastructure/fileQueueBackgroundInputSink";
 export * from "./simple_pomdp/infrastructure/loadInitialDomainCandidates";
+export * from "./simple_pomdp/infrastructure/contextSources";
+export * from "./simple_pomdp/infrastructure/postgresUserMemoryReader";
 export * from "./simple_pomdp/infrastructure/ollama/client";
 export * from "./simple_pomdp/infrastructure/ollama/fileCachedModel";
 export * from "./simple_pomdp/infrastructure/langchain/exploitResearchAgent";

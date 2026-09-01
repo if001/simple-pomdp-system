@@ -191,13 +191,26 @@ export interface BackgroundInputSink {
   enqueue(input: BackgroundInput): Promise<void>;
 }
 
-export interface PomdpContextProvider {
-  getContext(input: {
+export interface ProactiveContextInput {
+  botId: string;
+  threadId: string;
+  userId: string;
+}
+
+export interface ProactiveContextSource {
+  name: string;
+  load(input: ProactiveContextInput): Promise<string[]>;
+}
+
+export interface UserMemoryItem {
+  text: string;
+  createdAtIso?: string;
+}
+
+export interface UserMemoryReader {
+  listRecentUserMemory(input: {
     botId: string;
-    threadId: string;
     userId: string;
-  }): Promise<{
-    recentContextSummary?: string;
-    notes?: string[];
-  }>;
+    limit: number;
+  }): Promise<UserMemoryItem[]>;
 }
