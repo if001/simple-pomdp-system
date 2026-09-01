@@ -4,6 +4,10 @@ import { createQueueApi, FileQueueStore } from "@chat-agent/queue";
 import { createPostgresTurnRecordReader } from "@chat-agent/memory-system";
 import {
   createFileCachedDialoguePlanningModel,
+  createRecentTurnContextSource,
+  createTopicStateInteractionLogContextSource,
+  createUserMemoryContextSource,
+  createPostgresUserMemoryReader,
   createLangChainExploitResearchAgent,
   createFileInteractionLogStore,
   createFileQueueBackgroundInputSink,
@@ -14,6 +18,7 @@ import {
   getFileQueueStatus,
   type KnowledgeAccessService,
   type SimplePomdpBackgroundAppOptions,
+  type UserMemoryQueryExecutor,
 } from "../index";
 
 export const buildSimplePomdpBackgroundAppFromEnv = async (
@@ -72,6 +77,30 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       ? { headers: { authorization: `Bearer ${env.OLLAMA_API_KEY}` } }
       : {}),
   });
+  const turnRecordReader = createPostgresTurnRecordReader(
+    requiredFromEnv(env, "POSTGRES_URL"),
+  );
+  const userBeliefStore = createFileUserBeliefStore({
+    baseDir: join(storeDir, "beliefs"),
+  });
+  const interactionLogStore = createFileInteractionLogStore({
+    baseDir: join(storeDir, "interaction-logs"),
+    maxLogsPerUser: optionalNumberFromEnv(
+      env,
+      "SIMPLE_POMDP_MAX_LOGS_PER_USER",
+      200,
+    ),
+  });
+  const recentTurnLimit = optionalNumberFromEnv(
+    env,
+    "SIMPLE_POMDP_RECENT_TURN_LIMIT",
+    12,
+  );
+  const interactionLogLimit = optionalNumberFromEnv(
+    env,
+    "SIMPLE_POMDP_INTERACTION_LOG_LIMIT",
+    20,
+  );
   const options: SimplePomdpBackgroundAppOptions = {
     botId,
     threadIds,
@@ -81,20 +110,25 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       "SIMPLE_POMDP_BACKGROUND_POLL_MS",
       60_000,
     ),
-    turnRecordReader: createPostgresTurnRecordReader(
-      requiredFromEnv(env, "POSTGRES_URL"),
-    ),
-    userBeliefStore: createFileUserBeliefStore({
-      baseDir: join(storeDir, "beliefs"),
-    }),
-    interactionLogStore: createFileInteractionLogStore({
-      baseDir: join(storeDir, "interaction-logs"),
-      maxLogsPerUser: optionalNumberFromEnv(
-        env,
-        "SIMPLE_POMDP_MAX_LOGS_PER_USER",
-        200,
-      ),
-    }),
+    turnRecordReader,
+    userBeliefStore,
+    interactionLogStore,
+    contextSources: [
+      createRecentTurnContextSource({
+        reader: turnRecordReader,
+        limit: recentTurnLimit,
+      }),
+      createUserMemoryContextSource({
+        reader: createPostgresUserMemoryReader(
+          knowledgePool as UserMemoryQueryExecutor,
+        ),
+      }),
+      createTopicStateInteractionLogContextSource({
+        userBeliefReader: userBeliefStore,
+        interactionLogReader: interactionLogStore,
+        limit: interactionLogLimit,
+      }),
+    ],
     plannerModel: createFileCachedDialoguePlanningModel(
       createOllamaDialoguePlanningModel(
         requiredFromEnv(env, "OLLAMA_BASE_URL"),
@@ -116,16 +150,8 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
         ? { debugLogFilePath: env.SIMPLE_POMDP_QUEUE_DEBUG_LOG_FILE }
         : {}),
     }),
-    recentTurnLimit: optionalNumberFromEnv(
-      env,
-      "SIMPLE_POMDP_RECENT_TURN_LIMIT",
-      12,
-    ),
-    interactionLogLimit: optionalNumberFromEnv(
-      env,
-      "SIMPLE_POMDP_INTERACTION_LOG_LIMIT",
-      20,
-    ),
+    recentTurnLimit,
+    interactionLogLimit,
     observeWindowTurns: optionalNumberFromEnv(
       env,
       "SIMPLE_POMDP_OBSERVE_WINDOW_TURNS",
@@ -209,6 +235,7 @@ const loadKnowledgeAccess = (): {
     webClient: unknown;
     analysisModel: unknown;
   }) => unknown;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
 } => require("../../../knowledge-access/lib");
 
 const main = async (): Promise<void> => {

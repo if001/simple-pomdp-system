@@ -5,10 +5,16 @@ import {
   type SimplePomdpSystemOptions,
 } from "../src/simple_pomdp/api/service";
 import {
+  createRecentTurnContextSource,
+  createTopicStateInteractionLogContextSource,
+  createUserMemoryContextSource,
+} from "../src/simple_pomdp/infrastructure/contextSources";
+import {
   BackgroundInput,
   DialoguePlanningModel,
   InteractionLog,
   InteractionLogStore,
+  ProactiveContextSource,
   TurnRecord,
   TurnRecordReader,
   UserBelief,
@@ -38,6 +44,97 @@ test("dispatchNext applies a dialogue decision and enqueues a background instruc
   assert.match(
     dispatched[0]?.text ?? "",
     /これはユーザーからの入力ではなく、background からの介入指示です。/,
+  );
+});
+
+test("dispatchNext loads injected proactive context sources with planner scope", async () => {
+  const calls: Array<{ botId: string; threadId: string; userId: string }> = [];
+  let plannerPrompt = "";
+  const source: ProactiveContextSource = {
+    name: "fake-source",
+    load: async (input) => {
+      calls.push(input);
+      return ["fake context item"];
+    },
+  };
+  const fallback = createDefaultPlannerModel();
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    userBeliefStore: createInMemoryUserBeliefStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    contextSources: [source],
+    plannerModel: {
+      generateJson: async (systemPrompt, userPrompt) => {
+        plannerPrompt = userPrompt;
+        return fallback.generateJson(systemPrompt, userPrompt);
+      },
+    },
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+
+  await service.dispatchNext({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  assert.deepEqual(calls, [
+    { botId: "ao", threadId: "thread-1", userId: "discord-user" },
+  ]);
+  assert.match(plannerPrompt, /fake context item/);
+  assert.doesNotMatch(plannerPrompt, /userBeliefSummary/);
+  assert.deepEqual(Object.keys(source).sort(), ["load", "name"]);
+});
+
+test("dispatchNext passes an empty source context to the planner", async () => {
+  let plannerPrompt = "";
+  const fallback = createDefaultPlannerModel();
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    userBeliefStore: createInMemoryUserBeliefStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    contextSources: [{ name: "empty", load: async () => [] }],
+    plannerModel: {
+      generateJson: async (systemPrompt, userPrompt) => {
+        plannerPrompt = userPrompt;
+        return fallback.generateJson(systemPrompt, userPrompt);
+      },
+    },
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+
+  await service.dispatchNext({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  assert.match(plannerPrompt, /"proactiveContext":\[\]/);
+});
+
+test("dispatchNext reports a proactive context source failure by name", async () => {
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    userBeliefStore: createInMemoryUserBeliefStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    contextSources: [
+      {
+        name: "broken-user-memory",
+        load: async () => {
+          throw new Error("database unavailable");
+        },
+      },
+    ],
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+
+  await assert.rejects(
+    service.dispatchNext({
+      botId: "ao",
+      threadId: "thread-1",
+      userId: "discord-user",
+    }),
+    /Proactive context source "broken-user-memory" failed: database unavailable/,
   );
 });
 
@@ -513,10 +610,9 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
   assert.match(capturedPrompt, /"currentSituation":\{/);
   assert.match(capturedPrompt, /"dayOfWeek":"Sunday"/);
   assert.match(capturedPrompt, /"timeBucket":"daytime"/);
-  assert.match(capturedPrompt, /"recentInteractions":\[/);
-  assert.match(capturedPrompt, /"observation":"no_response"/);
-  assert.match(capturedPrompt, /"elapsed":"4h"/);
-  assert.match(capturedPrompt, /"sentDate":"2026-06-14"/);
+  assert.match(capturedPrompt, /"proactiveContext":\[/);
+  assert.match(capturedPrompt, /observation=no_response/);
+  assert.match(capturedPrompt, /interaction at=2026-06-14T00:00:00.000Z/);
   const logs = await interactionLogStore.listRecentInteractionLogs({
     userId: "discord-user",
     limit: 10,
@@ -597,12 +693,27 @@ test("dispatchNext uses exploit research result in instruction and interaction l
 });
 
 function createTestService(
-  options: Omit<SimplePomdpSystemOptions, "plannerModel"> & {
+  options: Omit<
+    SimplePomdpSystemOptions,
+    "plannerModel" | "contextSources"
+  > & {
     plannerModel?: DialoguePlanningModel;
+    contextSources?: ProactiveContextSource[];
   },
 ) {
+  const contextSources = options.contextSources ?? [
+    createRecentTurnContextSource({ reader: options.turnRecordReader }),
+    createUserMemoryContextSource({
+      reader: { listRecentUserMemory: async () => [] },
+    }),
+    createTopicStateInteractionLogContextSource({
+      userBeliefReader: options.userBeliefStore,
+      interactionLogReader: options.interactionLogStore,
+    }),
+  ];
   return createSimplePomdpSystemService({
     ...options,
+    contextSources,
     plannerModel: options.plannerModel ?? createDefaultPlannerModel(),
   });
 }
