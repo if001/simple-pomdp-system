@@ -3,7 +3,7 @@ import {
   ProactiveContextSource,
   TurnRecord,
   TurnRecordReader,
-  UserBeliefStore,
+  TopicStateStore,
   UserMemoryReader,
 } from "../domain/types";
 
@@ -60,7 +60,7 @@ export const createUserMemoryContextSource = (options: {
 };
 
 export const createTopicStateInteractionLogContextSource = (options: {
-  userBeliefReader: Pick<UserBeliefStore, "getUserBelief">;
+  topicStateReader: Pick<TopicStateStore, "getTopicState">;
   interactionLogReader: Pick<InteractionLogStore, "listRecentInteractionLogs">;
 } & ContextLimitOptions): ProactiveContextSource => {
   const limit = positiveInteger(options.limit, 12);
@@ -68,16 +68,16 @@ export const createTopicStateInteractionLogContextSource = (options: {
   return {
     name: "topic-state-interaction-log",
     async load(input) {
-      const [belief, logs] = await Promise.all([
-        options.userBeliefReader.getUserBelief(input.userId),
+      const [state, logs] = await Promise.all([
+        options.topicStateReader.getTopicState(input.userId),
         options.interactionLogReader.listRecentInteractionLogs({
           userId: input.userId,
           limit,
         }),
       ]);
-      const topicContext = (belief?.topics ?? []).slice(-limit).map((topic) =>
+      const topicContext = (state?.topics ?? []).slice(-limit).map((topic) =>
         compact(
-          `[topic-state] domain=${topic.domain}${topic.topic ? ` topic=${topic.topic}` : ""} interest=${topic.interest} confidence=${topic.confidence}`,
+          `[topic-state] topic=${topic.topic} assessment=${topic.assessment} evidence=${topic.evidence}${topic.lastTriedAt ? ` lastTriedAt=${topic.lastTriedAt}` : ""}`,
           maxItemLength,
         ),
       );

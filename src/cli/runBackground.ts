@@ -11,7 +11,7 @@ import {
   createLangChainExploitResearchAgent,
   createFileInteractionLogStore,
   createFileQueueBackgroundInputSink,
-  createFileUserBeliefStore,
+  createFileTopicStateStore,
   loadInitialDomainCandidates,
   createOllamaDialoguePlanningModel,
   createSimplePomdpBackgroundApp,
@@ -80,8 +80,8 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
   const turnRecordReader = createPostgresTurnRecordReader(
     requiredFromEnv(env, "POSTGRES_URL"),
   );
-  const userBeliefStore = createFileUserBeliefStore({
-    baseDir: join(storeDir, "beliefs"),
+  const topicStateStore = createFileTopicStateStore({
+    baseDir: join(storeDir, "topic-states"),
   });
   const interactionLogStore = createFileInteractionLogStore({
     baseDir: join(storeDir, "interaction-logs"),
@@ -111,7 +111,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       60_000,
     ),
     turnRecordReader,
-    userBeliefStore,
+    topicStateStore,
     interactionLogStore,
     contextSources: [
       createRecentTurnContextSource({
@@ -124,7 +124,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
         ),
       }),
       createTopicStateInteractionLogContextSource({
-        userBeliefReader: userBeliefStore,
+        topicStateReader: topicStateStore,
         interactionLogReader: interactionLogStore,
         limit: interactionLogLimit,
       }),
@@ -161,11 +161,6 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       env,
       "SIMPLE_POMDP_PENDING_TIMEOUT_MS",
       6 * 60 * 60 * 1000,
-    ),
-    dispatchCooldownMs: optionalNumberFromEnv(
-      env,
-      "SIMPLE_POMDP_DISPATCH_COOLDOWN_MS",
-      60 * 60 * 1000,
     ),
     maxPendingInteractions: optionalNumberFromEnv(
       env,

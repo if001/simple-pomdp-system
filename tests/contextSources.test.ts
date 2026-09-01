@@ -8,7 +8,7 @@ import {
 import {
   InteractionLog,
   ProactiveContextInput,
-  UserBelief,
+  TopicStateSnapshot,
 } from "../src/simple_pomdp/domain/types";
 
 const input: ProactiveContextInput = {
@@ -99,25 +99,16 @@ test("user memory source scopes, filters, and limits memory items", async () => 
 });
 
 test("topic and interaction source reads one user and filters interaction scope", async () => {
-  const belief: UserBelief = {
+  const state: TopicStateSnapshot = {
     userId: "user-1",
     topics: [
       {
-        id: "topic-1",
-        domain: "IT",
         topic: "testing",
-        interest: 1,
-        confidence: "medium",
-        attemptCount: 1,
-        positiveCount: 1,
-        negativeCount: 0,
-        lastObservedAtIso: "2026-09-01T00:00:00.000Z",
+        assessment: "interested",
+        evidence: "テストの話題に前向きだった",
+        lastTriedAt: "2026-09-01T00:00:00.000Z",
       },
     ],
-    initiationTolerance: "medium",
-    initiationPositiveCount: 1,
-    initiationNegativeCount: 0,
-    initiationNoResponseCount: 0,
     updatedAtIso: "2026-09-01T00:00:00.000Z",
   };
   const logs: InteractionLog[] = [
@@ -129,10 +120,10 @@ test("topic and interaction source reads one user and filters interaction scope"
   const logCalls: unknown[] = [];
   const source = createTopicStateInteractionLogContextSource({
     limit: 4,
-    userBeliefReader: {
-      getUserBelief: async (userId) => {
+    topicStateReader: {
+      getTopicState: async (userId) => {
         beliefCalls.push(userId);
-        return belief;
+        return state;
       },
     },
     interactionLogReader: {

@@ -1,54 +1,30 @@
 export type { TurnRecord, TurnRecordReader } from "@chat-agent/memory-system";
 
-export type TopicInterest = -2 | -1 | 0 | 1 | 2;
-export type TopicConfidence = "low" | "medium" | "high";
-export type InitiationTolerance = "unknown" | "low" | "medium" | "high";
+export type TopicAssessment = "unknown" | "avoid" | "possible" | "interested";
 
-export interface TopicBelief {
-  id: string;
-  domain: string;
-  topic?: string;
-  interest: TopicInterest;
-  confidence: TopicConfidence;
-  attemptCount: number;
-  positiveCount: number;
-  negativeCount: number;
-  lastObservedAtIso: string;
+export interface TopicState {
+  topic: string;
+  assessment: TopicAssessment;
+  evidence: string;
+  lastTriedAt?: string;
 }
 
-export interface UserBelief {
+export interface TopicStateSnapshot {
   userId: string;
-  topics: TopicBelief[];
-  initiationTolerance: InitiationTolerance;
-  initiationPositiveCount: number;
-  initiationNegativeCount: number;
-  initiationNoResponseCount: number;
+  topics: TopicState[];
   updatedAtIso: string;
 }
 
-export type DialogueDecisionKind =
-  | "exploit"
-  | "refine"
-  | "explore"
-  | "do_nothing";
-export type ActiveDialogueDecisionKind = Exclude<
-  DialogueDecisionKind,
-  "do_nothing"
->;
+export type DialogueDecisionKind = "exploit" | "refine" | "explore";
 export type DialogueProbeType = "breadth" | "depth" | "exploit";
 
-export type DialogueDecision =
-  | {
-      kind: "do_nothing";
-      reason: string;
-    }
-  | {
-      kind: ActiveDialogueDecisionKind;
-      targetDomain: string;
-      targetTopic?: string;
-      messageIntent: string;
-      reason: string;
-    };
+export interface DialogueDecision {
+  kind: DialogueDecisionKind;
+  targetDomain: string;
+  targetTopic?: string;
+  messageIntent: string;
+  reason: string;
+}
 
 export interface InteractionLog {
   id: string;
@@ -166,7 +142,7 @@ export interface ExploitResearchAgent {
     targetDomain: string;
     targetTopic?: string;
     recentTurns: string[];
-    belief: UserBelief;
+    topicState: TopicStateSnapshot;
   }): Promise<ExploitResearchResult>;
 }
 
@@ -174,9 +150,9 @@ export interface DialoguePlanningModel {
   generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T>;
 }
 
-export interface UserBeliefStore {
-  getUserBelief(userId: string): Promise<UserBelief | null>;
-  saveUserBelief(belief: UserBelief): Promise<void>;
+export interface TopicStateStore {
+  getTopicState(userId: string): Promise<TopicStateSnapshot | null>;
+  saveTopicState(state: TopicStateSnapshot): Promise<void>;
 }
 
 export interface InteractionLogStore {
