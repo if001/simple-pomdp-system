@@ -363,6 +363,12 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       logSimplePomdp(
         `observe resolved threadId=${input.threadId} interactionId=${log.id} observation=${observation.observation}`,
       );
+      if (completedLog.observation === "no_response") {
+        logSimplePomdp(
+          `belief unchanged threadId=${input.threadId} interactionId=${log.id} reason=no_response`,
+        );
+        continue;
+      }
       const nextBelief = applyInteractionObservationToBelief(
         belief,
         completedLog,
@@ -476,22 +482,19 @@ const observeInteraction = async (
   }
 
   const subsequentTurns = turns.filter(
-    (turn) => Date.parse(turn.createdAtIso) > interactionAt,
+    (turn) =>
+      turn.kind === "human" &&
+      turn.sourceInteractionId === log.id &&
+      Date.parse(turn.createdAtIso) > interactionAt,
   );
 
   const observedTurns = subsequentTurns.slice(0, log.observeWindowTurns);
   const observedMessages = observedTurns
     .flatMap((turn) => turn.messages)
-    .filter(
-      (message) => message.role === "user" || message.role === "assistant",
-    )
+    .filter((message) => message.role === "user")
     .map((message) => `[${message.role}] ${message.content.trim()}`)
     .filter(Boolean);
-  const hasUserMessage = observedTurns.some((turn) =>
-    turn.messages.some(
-      (message) => message.role === "user" && message.content.trim().length > 0,
-    ),
-  );
+  const hasUserMessage = observedMessages.length > 0;
 
   if (!hasUserMessage && subsequentTurns.length < log.observeWindowTurns) {
     console.log("[observeInteraction] set pending");
@@ -651,6 +654,7 @@ const buildPlannerSignals = (
     (turn) => turn.botId === botId && turn.threadId === threadId,
   );
   const lastUserTimestampIso = [...threadTurns]
+    .filter((turn) => turn.kind === "human")
     .flatMap((turn) => turn.messages)
     .filter((message) => message.role === "user")
     .map((message) => message.timestampIso)
@@ -859,10 +863,16 @@ const normalizeDialogueDecision = (
 
 const formatRecentTurns = (turns: TurnRecord[]): string[] =>
   turns
-    .flatMap((turn) => turn.messages)
-    .filter(
-      (message) => message.role === "user" || message.role === "assistant",
-    )
+    .flatMap((turn) => {
+      if (turn.kind === "delegation") {
+        return [];
+      }
+      return turn.messages.filter((message) =>
+        turn.kind === "proactive"
+          ? message.role === "assistant"
+          : message.role === "user" || message.role === "assistant",
+      );
+    })
     .map((message) => {
       const timestamp = new Date(message.timestampIso);
       const localDate = `${timestamp.getFullYear()}-${pad2(timestamp.getMonth() + 1)}-${pad2(timestamp.getDate())}`;
