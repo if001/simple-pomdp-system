@@ -17,8 +17,8 @@ import {
   ProactiveContextSource,
   TurnRecord,
   TurnRecordReader,
-  UserBelief,
-  UserBeliefStore,
+  TopicStateSnapshot,
+  TopicStateStore,
 } from "../src/simple_pomdp/domain/types";
 
 test("dispatchNext applies a dialogue decision and enqueues a background instruction", async () => {
@@ -27,7 +27,7 @@ test("dispatchNext applies a dialogue decision and enqueues a background instruc
     turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最近は実装の話題が多いです"),
     ]),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore: createInMemoryInteractionLogStore(),
     backgroundInputSink: { enqueue: async (input) => enqueued.push(input) },
     now: () => new Date("2026-06-14T01:00:00.000Z"),
@@ -60,7 +60,7 @@ test("dispatchNext loads injected proactive context sources with planner scope",
   const fallback = createDefaultPlannerModel();
   const service = createTestService({
     turnRecordReader: createInMemoryTurnRecordReader(),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore: createInMemoryInteractionLogStore(),
     contextSources: [source],
     plannerModel: {
@@ -91,7 +91,7 @@ test("dispatchNext passes an empty source context to the planner", async () => {
   const fallback = createDefaultPlannerModel();
   const service = createTestService({
     turnRecordReader: createInMemoryTurnRecordReader(),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore: createInMemoryInteractionLogStore(),
     contextSources: [{ name: "empty", load: async () => [] }],
     plannerModel: {
@@ -115,7 +115,7 @@ test("dispatchNext passes an empty source context to the planner", async () => {
 test("dispatchNext reports a proactive context source failure by name", async () => {
   const service = createTestService({
     turnRecordReader: createInMemoryTurnRecordReader(),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore: createInMemoryInteractionLogStore(),
     contextSources: [
       {
@@ -140,7 +140,7 @@ test("dispatchNext reports a proactive context source failure by name", async ()
 
 test("scheduled proactive positive reaction updates the linked InteractionLog", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
-  const userBeliefStore = createInMemoryUserBeliefStore();
+  const topicStateStore = createInMemoryTopicStateStore();
   const turnRecordReader = createInMemoryTurnRecordReader([
     assistantTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最初の補足です。", "log-1"),
     userTurn("ao", "thread-1", "2026-06-14T00:01:00.000Z", "その方向はかなり興味があります", "log-1"),
@@ -164,9 +164,24 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
 
   const service = createTestService({
     turnRecordReader,
-    userBeliefStore,
+    topicStateStore,
     interactionLogStore,
     now: () => new Date("2026-06-14T02:00:00.000Z"),
+    plannerModel: {
+      generateJson: async (_systemPrompt, userPrompt) =>
+        userPrompt.includes("\"observedWindow\":")
+          ? {
+              observation: "positive",
+              feedbackNote: "ユーザーは前向きな関心を示した",
+            }
+          : {
+              kind: "refine",
+              targetDomain: "IT",
+              targetTopic: "implementation details",
+              messageIntent: "関心があった実装話題を少し掘り下げる",
+              reason: "implementation が interested になったため",
+            },
+    },
   });
 
   const dispatched = await service.dispatchNext({
@@ -176,18 +191,16 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
   });
 
   assert.equal(dispatched.length, 1);
-  const belief = await service.listUserBelief({ userId: "discord-user" });
-  const domainBelief = belief?.topics.find(
-    (topic) => topic.domain === "IT" && topic.topic === undefined,
-  );
-  const topicBelief = belief?.topics.find(
-    (topic) => topic.domain === "IT" && topic.topic === "implementation",
-  );
-  assert.equal(domainBelief?.interest, 1);
-  assert.equal(domainBelief?.positiveCount, 1);
-  assert.equal(topicBelief?.interest, 1);
-  assert.equal(topicBelief?.positiveCount, 1);
-  assert.equal(belief?.initiationPositiveCount, 1);
+  assert.match(dispatched[0]?.text ?? "", /判断種別: refine/);
+  const state = await service.listTopicState({ userId: "discord-user" });
+  assert.deepEqual(state?.topics, [
+    {
+      topic: "implementation",
+      assessment: "interested",
+      evidence: "ユーザーは前向きな関心を示した",
+      lastTriedAt: "2026-06-14T00:00:00.000Z",
+    },
+  ]);
   const logs = await interactionLogStore.listRecentInteractionLogs({
     userId: "discord-user",
     limit: 10,
@@ -196,37 +209,18 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
   assert.equal(logs[0]?.status, "resolved");
 });
 
-test("scheduled proactive continuation updates existing topic belief", async () => {
+test("scheduled proactive continuation updates existing topic state", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
-  const userBeliefStore = createInMemoryUserBeliefStore({
+  const topicStateStore = createInMemoryTopicStateStore({
     userId: "discord-user",
     topics: [
       {
-        id: "domain_IT",
-        domain: "IT",
-        interest: 1,
-        confidence: "medium",
-        attemptCount: 2,
-        positiveCount: 1,
-        negativeCount: 0,
-        lastObservedAtIso: "2026-06-14T00:00:00.000Z",
-      },
-      {
-        id: "topic_IT_implementation",
-        domain: "IT",
         topic: "implementation",
-        interest: 1,
-        confidence: "medium",
-        attemptCount: 2,
-        positiveCount: 1,
-        negativeCount: 0,
-        lastObservedAtIso: "2026-06-14T00:00:00.000Z",
+        assessment: "possible",
+        evidence: "以前は中立的な反応だった",
+        lastTriedAt: "2026-06-14T00:00:00.000Z",
       },
     ],
-    initiationTolerance: "medium",
-    initiationPositiveCount: 1,
-    initiationNegativeCount: 0,
-    initiationNoResponseCount: 0,
     updatedAtIso: "2026-06-14T00:00:00.000Z",
   });
   const turnRecordReader = createInMemoryTurnRecordReader([
@@ -252,7 +246,7 @@ test("scheduled proactive continuation updates existing topic belief", async () 
 
   const service = createTestService({
     turnRecordReader,
-    userBeliefStore,
+    topicStateStore,
     interactionLogStore,
     now: () => new Date("2026-06-14T02:00:00.000Z"),
   });
@@ -263,19 +257,11 @@ test("scheduled proactive continuation updates existing topic belief", async () 
     userId: "discord-user",
   });
 
-  const belief = await service.listUserBelief({ userId: "discord-user" });
-  const domainBeliefs = belief?.topics.filter(
-    (topic) => topic.domain === "IT" && topic.topic === undefined,
-  );
-  const topicBeliefs = belief?.topics.filter(
-    (topic) => topic.domain === "IT" && topic.topic === "implementation",
-  );
-  assert.equal(domainBeliefs?.length, 1);
-  assert.equal(topicBeliefs?.length, 1);
-  assert.equal(domainBeliefs?.[0]?.attemptCount, 3);
-  assert.equal(topicBeliefs?.[0]?.attemptCount, 3);
-  assert.equal(domainBeliefs?.[0]?.positiveCount, 2);
-  assert.equal(topicBeliefs?.[0]?.positiveCount, 2);
+  const state = await service.listTopicState({ userId: "discord-user" });
+  assert.equal(state?.topics.length, 1);
+  assert.equal(state?.topics[0]?.topic, "implementation");
+  assert.equal(state?.topics[0]?.assessment, "interested");
+  assert.equal(state?.topics[0]?.evidence, "ユーザーは前向きな関心を示した");
 });
 
 test("scheduled proactive negative reaction updates the linked InteractionLog", async () => {
@@ -313,7 +299,7 @@ test("scheduled proactive negative reaction updates the linked InteractionLog", 
         "scheduled-negative",
       ),
     ]),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore,
     now: () => new Date("2026-06-14T02:00:00.000Z"),
     plannerModel: {
@@ -404,7 +390,7 @@ test("conversation-trigger reaction uses only the linked human user evidence", a
   const fallbackPlanner = createDefaultPlannerModel();
   const service = createTestService({
     turnRecordReader,
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore,
     now: () => new Date("2026-06-14T02:00:00.000Z"),
     plannerModel: {
@@ -440,30 +426,21 @@ test("conversation-trigger reaction uses only the linked human user evidence", a
   assert.equal(logs.find((log) => log.id === "conversation-log")?.observation, "negative");
 });
 
-test("no_response updates the InteractionLog without changing belief", async () => {
+test("no_response updates the InteractionLog without changing state", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
-  const initialBelief: UserBelief = {
+  const initialState: TopicStateSnapshot = {
     userId: "discord-user",
     topics: [
       {
-        id: "topic_IT_testing",
-        domain: "IT",
         topic: "testing",
-        interest: 1,
-        confidence: "medium",
-        attemptCount: 2,
-        positiveCount: 1,
-        negativeCount: 0,
-        lastObservedAtIso: "2026-06-14T00:00:00.000Z",
+        assessment: "interested",
+        evidence: "ユーザーが前向きに反応した",
+        lastTriedAt: "2026-06-14T00:00:00.000Z",
       },
     ],
-    initiationTolerance: "medium",
-    initiationPositiveCount: 1,
-    initiationNegativeCount: 0,
-    initiationNoResponseCount: 0,
     updatedAtIso: "2026-06-14T00:00:00.000Z",
   };
-  const userBeliefStore = createInMemoryUserBeliefStore(initialBelief);
+  const topicStateStore = createInMemoryTopicStateStore(initialState);
   const turnRecordReader = createInMemoryTurnRecordReader([
     assistantTurn("ao", "thread-1", "2026-06-14T00:01:00.000Z", "補足を続けます。"),
     assistantTurn("ao", "thread-1", "2026-06-14T00:02:00.000Z", "もう一点あります。"),
@@ -488,7 +465,7 @@ test("no_response updates the InteractionLog without changing belief", async () 
 
   const service = createTestService({
     turnRecordReader,
-    userBeliefStore,
+    topicStateStore,
     interactionLogStore,
     maxPendingInteractions: 10,
     pendingTimeoutMs: 60 * 60 * 1000,
@@ -501,8 +478,8 @@ test("no_response updates the InteractionLog without changing belief", async () 
     userId: "discord-user",
   });
 
-  const belief = await service.listUserBelief({ userId: "discord-user" });
-  assert.deepEqual(belief, initialBelief);
+  const state = await service.listTopicState({ userId: "discord-user" });
+  assert.deepEqual(state, initialState);
   const logs = await interactionLogStore.listRecentInteractionLogs({
     userId: "discord-user",
     limit: 10,
@@ -514,7 +491,7 @@ test("no_response updates the InteractionLog without changing belief", async () 
 
 test("dispatchNext expires pending interaction after timeout even without enough turns", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
-  const userBeliefStore = createInMemoryUserBeliefStore();
+  const topicStateStore = createInMemoryTopicStateStore();
   const turnRecordReader = createInMemoryTurnRecordReader([]);
   await interactionLogStore.saveInteractionLog({
     id: "log-3",
@@ -535,7 +512,7 @@ test("dispatchNext expires pending interaction after timeout even without enough
 
   const service = createTestService({
     turnRecordReader,
-    userBeliefStore,
+    topicStateStore,
     interactionLogStore,
     pendingTimeoutMs: 60 * 60 * 1000,
     maxPendingInteractions: 10,
@@ -555,10 +532,10 @@ test("dispatchNext expires pending interaction after timeout even without enough
   const expired = logs.find((log) => log.id === "log-3");
   assert.equal(expired?.status, "expired");
   assert.equal(expired?.observation, "no_response");
-  assert.equal(await service.listUserBelief({ userId: "discord-user" }), null);
+  assert.equal(await service.listTopicState({ userId: "discord-user" }), null);
 });
 
-test("dispatchNext records do_nothing and passes inactivity buckets to planner", async () => {
+test("initial state falls back to an untried explore decision", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore([
     {
       id: "log-previous",
@@ -584,15 +561,16 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
   let capturedPrompt = "";
   const service = createTestService({
     turnRecordReader,
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore,
+    initialDomainCandidates: ["music", "sports"],
     now: () => new Date("2026-06-14T04:00:00.000Z"),
     plannerModel: {
       generateJson: async (_systemPrompt, userPrompt) => {
         capturedPrompt = userPrompt;
         return {
-          kind: "do_nothing",
-          reason: "まだ待つ",
+          kind: "wait",
+          reason: "invalid planner output",
         };
       },
     },
@@ -604,7 +582,9 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
     userId: "discord-user",
   });
 
-  assert.equal(dispatched.length, 0);
+  assert.equal(dispatched.length, 1);
+  assert.match(dispatched[0]?.text ?? "", /判断種別: explore/);
+  assert.match(dispatched[0]?.text ?? "", /領域: music/);
   assert.match(capturedPrompt, /"hoursSinceLastUserTurnBucket":"3h"/);
   assert.match(capturedPrompt, /"hoursSinceLastAgentInitiatedBucket":"4h"/);
   assert.match(capturedPrompt, /"currentSituation":\{/);
@@ -617,9 +597,51 @@ test("dispatchNext records do_nothing and passes inactivity buckets to planner",
     userId: "discord-user",
     limit: 10,
   });
-  const doNothing = logs.find((log) => log.candidateKind === "do_nothing");
-  assert.equal(doNothing?.status, "resolved");
-  assert.equal(doNothing?.observation, "unknown");
+  assert.equal(logs.at(-1)?.candidateKind, "explore");
+  assert.deepEqual(
+    [...new Set(logs.map((log) => log.candidateKind))],
+    ["exploit", "explore"],
+  );
+});
+
+test("an avoided topic is rejected and replaced with an allowed explore", async () => {
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore({
+      userId: "discord-user",
+      topics: [
+        {
+          topic: "baseball",
+          assessment: "avoid",
+          evidence: "ユーザーが興味はないと明示した",
+          lastTriedAt: "2026-06-14T00:00:00.000Z",
+        },
+      ],
+      updatedAtIso: "2026-06-14T00:00:00.000Z",
+    }),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    initialDomainCandidates: ["music", "sports"],
+    plannerModel: {
+      generateJson: async () => ({
+        kind: "exploit",
+        targetDomain: "sports",
+        targetTopic: "baseball",
+        messageIntent: "野球の情報を再提示する",
+        reason: "以前試したため",
+      }),
+    },
+    now: () => new Date("2026-06-14T02:00:00.000Z"),
+  });
+
+  const [dispatched] = await service.dispatchNext({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  assert.match(dispatched?.text ?? "", /判断種別: explore/);
+  assert.match(dispatched?.text ?? "", /領域: music/);
+  assert.doesNotMatch(dispatched?.text ?? "", /baseball/);
 });
 
 test("dispatchNext skips outside configured interaction hours", async () => {
@@ -628,7 +650,7 @@ test("dispatchNext skips outside configured interaction hours", async () => {
     turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "最近どう？"),
     ]),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore(),
     interactionLogStore: createInMemoryInteractionLogStore(),
     interactionStartHour: 10,
     interactionEndHour: 24,
@@ -637,8 +659,10 @@ test("dispatchNext skips outside configured interaction hours", async () => {
       generateJson: async () => {
         plannerCalled = true;
         return {
-          kind: "do_nothing",
-          reason: "時間外",
+          kind: "explore",
+          targetDomain: "music",
+          messageIntent: "音楽の関心を尋ねる",
+          reason: "未試行だから",
         };
       },
     },
@@ -661,7 +685,17 @@ test("dispatchNext uses exploit research result in instruction and interaction l
     turnRecordReader: createInMemoryTurnRecordReader([
       userTurn("ao", "thread-1", "2026-06-14T00:00:00.000Z", "TypeScript 最近どう？"),
     ]),
-    userBeliefStore: createInMemoryUserBeliefStore(),
+    topicStateStore: createInMemoryTopicStateStore({
+      userId: "discord-user",
+      topics: [
+        {
+          topic: "implementation",
+          assessment: "interested",
+          evidence: "ユーザーが実装の話題に前向きだった",
+        },
+      ],
+      updatedAtIso: "2026-06-14T00:00:00.000Z",
+    }),
     interactionLogStore,
     backgroundInputSink: { enqueue: async (input) => enqueued.push(input) },
     now: () => new Date("2026-06-14T12:00:00.000Z"),
@@ -707,7 +741,7 @@ function createTestService(
       reader: { listRecentUserMemory: async () => [] },
     }),
     createTopicStateInteractionLogContextSource({
-      userBeliefReader: options.userBeliefStore,
+      topicStateReader: options.topicStateStore,
       interactionLogReader: options.interactionLogStore,
     }),
   ];
@@ -746,14 +780,14 @@ function createInMemoryTurnRecordReader(initial: TurnRecord[] = []): TurnRecordR
   };
 }
 
-function createInMemoryUserBeliefStore(
-  initial: UserBelief | null = null,
-): UserBeliefStore {
+function createInMemoryTopicStateStore(
+  initial: TopicStateSnapshot | null = null,
+): TopicStateStore {
   let item = initial;
   return {
-    getUserBelief: async () => item,
-    saveUserBelief: async (belief) => {
-      item = belief;
+    getTopicState: async () => item,
+    saveTopicState: async (state) => {
+      item = state;
     },
   };
 }

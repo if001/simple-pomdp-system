@@ -1,27 +1,27 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { UserBelief, UserBeliefStore } from "../domain/types";
+import { TopicStateSnapshot, TopicStateStore } from "../domain/types";
 
-export interface FileUserBeliefStoreOptions {
+export interface FileTopicStateStoreOptions {
   baseDir: string;
 }
 
-export const createFileUserBeliefStore = (
-  options: FileUserBeliefStoreOptions,
-): UserBeliefStore => ({
-  async getUserBelief(userId) {
+export const createFileTopicStateStore = (
+  options: FileTopicStateStoreOptions,
+): TopicStateStore => ({
+  async getTopicState(userId) {
     try {
       const raw = await readFile(toFilePath(options.baseDir, userId), "utf8");
-      return JSON.parse(raw) as UserBelief;
+      return JSON.parse(raw) as TopicStateSnapshot;
     } catch {
       return null;
     }
   },
-  async saveUserBelief(belief) {
+  async saveTopicState(state) {
     await mkdir(options.baseDir, { recursive: true });
     await writeFile(
-      toFilePath(options.baseDir, belief.userId),
-      JSON.stringify(belief, null, 2),
+      toFilePath(options.baseDir, state.userId),
+      JSON.stringify(state, null, 2),
       "utf8",
     );
   },
