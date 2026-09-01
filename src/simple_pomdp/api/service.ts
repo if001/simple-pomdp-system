@@ -1,5 +1,4 @@
 import {
-  BackgroundInput,
   BackgroundInputSink,
   DialogueDecision,
   DialoguePlanningModel,
@@ -7,6 +6,8 @@ import {
   InteractionLogStore,
   InteractionObservation,
   ProactiveContextSource,
+  ProactiveTrigger,
+  ProactiveTriggerOutput,
   TurnRecord,
   TurnRecordReader,
   TopicState,
@@ -18,11 +19,12 @@ import {
 
 export interface SimplePomdpSystemService {
   listTopicState(input: { userId: string }): Promise<TopicStateSnapshot | null>;
-  dispatchNext(input: {
+  runTrigger(input: {
     botId: string;
     threadId: string;
     userId: string;
-  }): Promise<BackgroundInput[]>;
+    trigger: ProactiveTrigger;
+  }): Promise<ProactiveTriggerOutput | null>;
 }
 
 export interface SimplePomdpSystemOptions {
@@ -38,8 +40,6 @@ export interface SimplePomdpSystemOptions {
   observeWindowTurns?: number;
   pendingTimeoutMs?: number;
   maxPendingInteractions?: number;
-  interactionStartHour?: number;
-  interactionEndHour?: number;
   exploitResearchAgent?: ExploitResearchAgent;
   now?: () => Date;
 }
@@ -63,10 +63,12 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
   private readonly observeWindowTurns: number;
   private readonly pendingTimeoutMs: number;
   private readonly maxPendingInteractions: number;
-  private readonly interactionStartHour: number;
-  private readonly interactionEndHour: number;
   private readonly now: () => Date;
   private readonly initialDomainCandidates: string[];
+  private readonly inFlightByTrigger = new Map<
+    string,
+    Promise<ProactiveTriggerOutput | null>
+  >();
 
   constructor(private readonly options: SimplePomdpSystemOptions) {
     this.recentTurnLimit = Math.max(1, options.recentTurnLimit ?? 12);
@@ -80,8 +82,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       1,
       options.maxPendingInteractions ?? 1,
     );
-    this.interactionStartHour = clampHour(options.interactionStartHour ?? 0);
-    this.interactionEndHour = clampHour(options.interactionEndHour ?? 24);
     this.now = options.now ?? (() => new Date());
     this.initialDomainCandidates = (options.initialDomainCandidates ?? [])
       .map((value) => value.trim())
@@ -94,11 +94,30 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     return this.options.topicStateStore.getTopicState(input.userId);
   }
 
-  async dispatchNext(input: {
+  async runTrigger(input: {
     botId: string;
     threadId: string;
     userId: string;
-  }): Promise<BackgroundInput[]> {
+    trigger: ProactiveTrigger;
+  }): Promise<ProactiveTriggerOutput | null> {
+    const key = `${input.trigger}:${input.botId}:${input.threadId}:${input.userId}`;
+    const existing = this.inFlightByTrigger.get(key);
+    if (existing) {
+      return existing;
+    }
+    const pending = this.executeTrigger(input).finally(() => {
+      this.inFlightByTrigger.delete(key);
+    });
+    this.inFlightByTrigger.set(key, pending);
+    return pending;
+  }
+
+  private async executeTrigger(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    trigger: ProactiveTrigger;
+  }): Promise<ProactiveTriggerOutput | null> {
     logSimplePomdp(
       `dispatch start botId=${input.botId} threadId=${input.threadId} userId=${input.userId}`,
     );
@@ -126,20 +145,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       logSimplePomdp(
         `dispatch skip threadId=${input.threadId} reason=max_pending_interactions pending=${pendingLogs.length} limit=${this.maxPendingInteractions}`,
       );
-      return [];
-    }
-    const currentHour = this.now().getHours();
-    if (
-      !isWithinInteractionHours(
-        currentHour,
-        this.interactionStartHour,
-        this.interactionEndHour,
-      )
-    ) {
-      logSimplePomdp(
-        `dispatch skip threadId=${input.threadId} reason=outside_interaction_hours currentHour=${currentHour} startHour=${this.interactionStartHour} endHour=${this.interactionEndHour}`,
-      );
-      return [];
+      return null;
     }
     const recentTurns =
       await this.options.turnRecordReader.listRecentTurnRecords({
@@ -149,18 +155,14 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       });
     const proactiveContext = await loadProactiveContext(
       this.options.contextSources,
-      input,
-    );
-    const planningNow = this.now();
-    const plannerSignals = buildPlannerSignals(
-      recentTurns,
-      interactionLogs,
-      planningNow,
-      input.botId,
-      input.threadId,
+      {
+        botId: input.botId,
+        threadId: input.threadId,
+        userId: input.userId,
+      },
     );
     logSimplePomdp(
-      `planning input threadId=${input.threadId} recentTurns=${recentTurns.length} contextItems=${proactiveContext.length} userInactivity=${plannerSignals.hoursSinceLastUserTurnBucket} agentInactivity=${plannerSignals.hoursSinceLastAgentInitiatedBucket}`,
+      `planning input trigger=${input.trigger} threadId=${input.threadId} recentTurns=${recentTurns.length} contextItems=${proactiveContext.length}`,
     );
     const decision = await this.decideNextInteraction({
       proactiveContext,
@@ -170,9 +172,8 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           (value): value is string => Boolean(value),
         ),
       ),
-      plannerSignals,
+      trigger: input.trigger,
       initialDomainCandidates: this.initialDomainCandidates,
-      now: planningNow,
     });
     logSimplePomdp(
       `planning result threadId=${input.threadId} kind=${decision.kind}`,
@@ -204,14 +205,18 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         : null;
 
     const interactionId = `pomdp_${sanitize(input.userId)}_${this.now().toISOString()}`;
-    const backgroundInput: BackgroundInput = {
+    const output: ProactiveTriggerOutput = {
+      trigger: input.trigger,
       botId: input.botId,
       threadId: input.threadId,
-      text: buildBackgroundInstruction(decision, exploitResearch),
+      text:
+        input.trigger === "conversation"
+          ? buildConversationIntegrationInstruction(decision, exploitResearch)
+          : buildBackgroundInstruction(decision, exploitResearch),
       sourceInteractionId: interactionId,
     };
-    if (this.options.backgroundInputSink) {
-      await this.options.backgroundInputSink.enqueue(backgroundInput);
+    if (output.trigger === "scheduled" && this.options.backgroundInputSink) {
+      await this.options.backgroundInputSink.enqueue(output);
     }
     await this.options.interactionLogStore.saveInteractionLog({
       id: interactionId,
@@ -219,6 +224,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       botId: input.botId,
       threadId: input.threadId,
       candidateKind: decision.kind,
+      trigger: input.trigger,
       targetDomain: decision.targetDomain,
       ...(decision.targetTopic ? { targetTopic: decision.targetTopic } : {}),
       message: decision.messageIntent.trim(),
@@ -238,7 +244,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     logSimplePomdp(
       `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} decision=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
     );
-    return [backgroundInput];
+    return output;
   }
 
   private async refreshTopicStateFromPendingInteractions(input: {
@@ -323,23 +329,21 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     proactiveContext: string[];
     topicState: TopicStateSnapshot;
     triedTopics: string[];
-    plannerSignals: PlannerSignals;
+    trigger: ProactiveTrigger;
     initialDomainCandidates: string[];
-    now: Date;
   }): Promise<DialogueDecision> {
     const raw_prompt = JSON.stringify({
       instruction: [
-        "currentSituation と proactiveContext を読んでください。",
-        "現在の時刻・曜日は、話題を出す自然さと過去のおすすめをフォローする時期の判断にだけ使ってください。",
+        "trigger と proactiveContext を読んでください。",
+        "発話時刻や間隔は外側で決定済みです。話すかどうかではなく話題だけを選んでください。",
         "proactiveContext 内の interaction の時刻・話題・反応を比較し、無反応の理由は仮説として扱ってください。",
         "initialDomainCandidates は、初対面で広く探るための幅広い領域候補です。",
         "assessment=interested の topic は refine/exploit を優先できます。",
         "assessment=avoid の topic は候補にしないでください。",
         "最終的な DialogueDecision を 1 件だけ返してください。",
       ].join(" "),
-      currentSituation: buildCurrentSituation(input.now),
+      trigger: input.trigger,
       proactiveContext: input.proactiveContext,
-      plannerSignals: input.plannerSignals,
       initialDomainCandidates: input.initialDomainCandidates.slice(0, 24),
     });
     console.log("[decideNextInteraction] raw_prompt: ", raw_prompt);
@@ -347,6 +351,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       await this.options.plannerModel.generateJson<RawDialogueDecision>(
         [
           "あなたは POMDP ベースの proactive dialogue planner です。",
+          "trigger は conversation または scheduled です。どちらでも発話タイミングは決定済みです。",
           "今この時点で行う判断を 1 件だけ返してください。kind は exploit, refine, explore のいずれかです。",
           "explore は broad domain 候補から、最近の会話に偏りすぎず未知の関心を低コストに確認します。",
           "refine は既に反応のあった domain/topic を少し絞る候補です。",
@@ -437,7 +442,9 @@ const observeInteraction = async (
       Date.parse(turn.createdAtIso) > interactionAt,
   );
 
-  const observedTurns = subsequentTurns.slice(0, log.observeWindowTurns);
+  const reactionTurns =
+    log.trigger === "conversation" ? subsequentTurns.slice(1) : subsequentTurns;
+  const observedTurns = reactionTurns.slice(0, log.observeWindowTurns);
   const observedMessages = observedTurns
     .flatMap((turn) => turn.messages)
     .filter((message) => message.role === "user")
@@ -445,7 +452,7 @@ const observeInteraction = async (
     .filter(Boolean);
   const hasUserMessage = observedMessages.length > 0;
 
-  if (!hasUserMessage && subsequentTurns.length < log.observeWindowTurns) {
+  if (!hasUserMessage && reactionTurns.length < log.observeWindowTurns) {
     console.log("[observeInteraction] set pending");
     return { kind: "pending" };
   }
@@ -570,58 +577,6 @@ const normalizeInteractionLog = (
   observeWindowTurns: log.observeWindowTurns ?? defaultObserveWindowTurns,
 });
 
-interface PlannerSignals {
-  hoursSinceLastUserTurnBucket: string;
-  hoursSinceLastAgentInitiatedBucket: string;
-}
-
-const buildPlannerSignals = (
-  turns: TurnRecord[],
-  interactionLogs: InteractionLog[],
-  now: Date,
-  botId: string,
-  threadId: string,
-): PlannerSignals => {
-  const threadTurns = turns.filter(
-    (turn) => turn.botId === botId && turn.threadId === threadId,
-  );
-  const lastUserTimestampIso = [...threadTurns]
-    .filter((turn) => turn.kind === "human")
-    .flatMap((turn) => turn.messages)
-    .filter((message) => message.role === "user")
-    .map((message) => message.timestampIso)
-    .sort()
-    .at(-1);
-  const lastAgentInteractionIso = interactionLogs
-    .filter(
-      (log) => log.botId === botId && log.threadId === threadId,
-    )
-    .map((log) => log.createdAtIso)
-    .sort()
-    .at(-1);
-  return {
-    hoursSinceLastUserTurnBucket: toHourBucket(lastUserTimestampIso, now),
-    hoursSinceLastAgentInitiatedBucket: toHourBucket(
-      lastAgentInteractionIso,
-      now,
-    ),
-  };
-};
-
-const toHourBucket = (iso: string | undefined, now: Date): string => {
-  if (!iso) {
-    return "never";
-  }
-  const hours = Math.max(
-    0,
-    Math.floor((now.getTime() - Date.parse(iso)) / (60 * 60 * 1000)),
-  );
-  if (hours >= 24) {
-    return "24h+";
-  }
-  return `${hours}h`;
-};
-
 const dayNames = [
   "Sunday",
   "Monday",
@@ -631,14 +586,6 @@ const dayNames = [
   "Friday",
   "Saturday",
 ] as const;
-
-const buildCurrentSituation = (now: Date) => ({
-  localDate: `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`,
-  dayOfWeek: dayNames[now.getDay()],
-  localTime: `${pad2(now.getHours())}:${pad2(now.getMinutes())}`,
-  timeBucket: toTimeBucket(now),
-  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-});
 
 const toTimeBucket = (
   date: Date,
@@ -694,6 +641,22 @@ const buildBackgroundInstruction = (
     "- ユーザーの代わりに答えないでください。",
     "- 自然な 1 文または 2 文に整えてください。",
     "- 最終的なユーザー向けメッセージ本文だけを返してください。",
+  ].join("\n");
+
+const buildConversationIntegrationInstruction = (
+  decision: DialogueDecision,
+  exploitResearch: ExploitResearchResult | null,
+): string =>
+  [
+    "通常のユーザー回答を1通だけ作成し、その末尾へ次の話題を自然に統合してください。",
+    "話題だけの別messageは送らず、回答本文と一体化してください。",
+    `判断種別: ${decision.kind}`,
+    `領域: ${decision.targetDomain}`,
+    ...(decision.targetTopic ? [`話題: ${decision.targetTopic}`] : []),
+    `意図: ${decision.messageIntent}`,
+    ...(exploitResearch?.summary
+      ? [`補足材料: ${exploitResearch.summary}`]
+      : []),
   ].join("\n");
 
 const normalizeDialogueDecision = (
@@ -812,27 +775,6 @@ const isPendingInteraction = (log: InteractionLog): boolean =>
   log.status === "pending" ||
   ((log.status === undefined || log.status === null) &&
     log.observation === "unknown");
-
-const clampHour = (value: number): number => {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return Math.max(0, Math.min(24, Math.floor(value)));
-};
-
-const isWithinInteractionHours = (
-  currentHour: number,
-  startHour: number,
-  endHour: number,
-): boolean => {
-  if (startHour === endHour) {
-    return true;
-  }
-  if (startHour < endHour) {
-    return currentHour >= startHour && currentHour < endHour;
-  }
-  return currentHour >= startHour || currentHour < endHour;
-};
 
 const sanitize = (value: string): string =>
   value.replace(/[^a-zA-Z0-9_-]/g, "_");

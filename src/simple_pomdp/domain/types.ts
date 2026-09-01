@@ -16,6 +16,7 @@ export interface TopicStateSnapshot {
 }
 
 export type DialogueDecisionKind = "exploit" | "refine" | "explore";
+export type ProactiveTrigger = "conversation" | "scheduled";
 export type DialogueProbeType = "breadth" | "depth" | "exploit";
 
 export interface DialogueDecision {
@@ -32,6 +33,7 @@ export interface InteractionLog {
   botId: string;
   threadId: string;
   candidateKind: DialogueDecisionKind;
+  trigger: ProactiveTrigger;
   /** Legacy field. New decisions derive the exploration style from kind. */
   probeType?: DialogueProbeType;
   targetDomain?: string;
@@ -57,12 +59,24 @@ export type InteractionObservation =
 
 export type InteractionStatus = "pending" | "resolved" | "expired";
 
-export interface BackgroundInput {
+interface ProactiveTriggerOutputBase {
   botId: string;
   threadId: string;
   text: string;
   sourceInteractionId: string;
 }
+
+export interface ConversationTopicOutput extends ProactiveTriggerOutputBase {
+  trigger: "conversation";
+}
+
+export interface ScheduledAgentInput extends ProactiveTriggerOutputBase {
+  trigger: "scheduled";
+}
+
+export type ProactiveTriggerOutput =
+  | ConversationTopicOutput
+  | ScheduledAgentInput;
 
 export interface KnowledgeAccessSearchResultItem {
   articleId: string;
@@ -164,7 +178,7 @@ export interface InteractionLogStore {
 }
 
 export interface BackgroundInputSink {
-  enqueue(input: BackgroundInput): Promise<void>;
+  enqueue(input: ScheduledAgentInput): Promise<void>;
 }
 
 export interface ProactiveContextInput {

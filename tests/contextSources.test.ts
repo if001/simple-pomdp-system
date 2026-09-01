@@ -153,6 +153,7 @@ const interaction = (
   botId,
   threadId,
   candidateKind: "explore",
+  trigger: "scheduled",
   targetDomain: "IT",
   message,
   status: "resolved",

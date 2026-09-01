@@ -167,16 +167,6 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       "SIMPLE_POMDP_MAX_PENDING_INTERACTIONS",
       1,
     ),
-    interactionStartHour: optionalNumberFromEnv(
-      env,
-      "SIMPLE_POMDP_INTERACTION_START_HOUR",
-      0,
-    ),
-    interactionEndHour: optionalNumberFromEnv(
-      env,
-      "SIMPLE_POMDP_INTERACTION_END_HOUR",
-      24,
-    ),
     exploitResearchAgent: createLangChainExploitResearchAgent({
       model: exploitAgentModel,
       knowledgeAccessService,
