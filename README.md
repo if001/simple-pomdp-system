@@ -1,22 +1,23 @@
 # simple-pomdp-system
 
-Lightweight proactive dialogue system based on `docs/simple_pomdp.md`.
+Proactive initiative planner for chat-agent.
 
-It persists:
+It persists only:
 
-- `TurnRecord`
-- `UserBelief`
+- `TopicState`
 - `InteractionLog`
+
+Canonical `TurnRecord` history is read from memory-system and is not copied here.
 
 At runtime it:
 
-1. reads belief and recent turns
-2. loads broad initial domain candidates for breadth exploration
-3. builds a compact situation summary with the current time and recent interactions
-4. returns one `DialogueDecision`: explore, refine, exploit, or `do_nothing`
-5. treats no response as ambiguous context rather than negative interest
-6. enqueues a background instruction for the main agent
-7. later observes user reaction and updates belief
+1. reads recent turns, shared UserMemory, TopicState, and InteractionLog through
+   injected context sources
+2. returns exactly one `DialogueDecision`: `explore`, `refine`, or `exploit`
+3. returns conversation-trigger output to the caller, or enqueues one scheduled
+   background instruction
+4. links the later human reaction with `sourceInteractionId`
+5. treats no response as an observation without changing TopicState
 
 The default broad domain candidates live in `domains/initial_domains.txt`.
 

@@ -17,7 +17,6 @@ export interface TopicStateSnapshot {
 
 export type DialogueDecisionKind = "exploit" | "refine" | "explore";
 export type ProactiveTrigger = "conversation" | "scheduled";
-export type DialogueProbeType = "breadth" | "depth" | "exploit";
 
 export interface DialogueDecision {
   kind: DialogueDecisionKind;
@@ -34,8 +33,6 @@ export interface InteractionLog {
   threadId: string;
   candidateKind: DialogueDecisionKind;
   trigger: ProactiveTrigger;
-  /** Legacy field. New decisions derive the exploration style from kind. */
-  probeType?: DialogueProbeType;
   targetDomain?: string;
   targetTopic?: string;
   message: string;
