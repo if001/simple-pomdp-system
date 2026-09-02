@@ -4,6 +4,7 @@ export * from "./simple_pomdp/api/backgroundApp";
 export * from "./simple_pomdp/api/backgroundRunner";
 export * from "./simple_pomdp/infrastructure/fileTopicStateStore";
 export * from "./simple_pomdp/infrastructure/fileInteractionLogStore";
+export * from "./simple_pomdp/infrastructure/pendingInteractionResolver";
 export * from "./simple_pomdp/infrastructure/fileQueueBackgroundInputSink";
 export * from "./simple_pomdp/infrastructure/loadInitialDomainCandidates";
 export * from "./simple_pomdp/infrastructure/contextSources";
