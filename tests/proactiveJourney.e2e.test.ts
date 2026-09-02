@@ -29,14 +29,16 @@ test("fixed journey progresses explore to refine to exploit with one traced disp
     {
       kind: "refine",
       targetDomain: "engineering",
-      targetTopic: "property testing",
+      targetTopic: "プロパティベーステスト",
+      matchedExistingTopic: "testing",
       messageIntent: "関心があったテスト手法を少し掘り下げる",
       reason: "testingへの肯定反応があった",
     },
     {
       kind: "exploit",
       targetDomain: "engineering",
-      targetTopic: "property testing",
+      targetTopic: "Testing",
+      matchedExistingTopic: "testing",
       messageIntent: "property testingの実践例を共有する",
       reason: "継続して肯定反応があった",
     },
@@ -147,7 +149,7 @@ test("fixed journey progresses explore to refine to exploit with one traced disp
     [explored.sourceInteractionId, refined.sourceInteractionId],
   );
   assert.equal(
-    state?.topics.find((topic) => topic.topic === "property testing")
+    state?.topics.find((topic) => topic.topic === "testing")
       ?.assessment,
     "interested",
   );

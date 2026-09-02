@@ -22,6 +22,7 @@ export interface DialogueDecision {
   kind: DialogueDecisionKind;
   targetDomain: string;
   targetTopic?: string;
+  matchedExistingTopic?: string;
   messageIntent: string;
   reason: string;
 }

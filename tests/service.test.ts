@@ -250,6 +250,7 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
               kind: "refine",
               targetDomain: "IT",
               targetTopic: "implementation details",
+              matchedExistingTopic: "implementation",
               messageIntent: "関心があった実装話題を少し掘り下げる",
               reason: "implementation が interested になったため",
             },
@@ -753,6 +754,102 @@ test("an avoided topic is rejected and replaced with an allowed explore", async 
   assert.doesNotMatch(dispatched?.text ?? "", /baseball/);
 });
 
+test.each([
+  ["property testing", "プロパティベーステスト", "refine"],
+  ["TypeScript", "typescript", "exploit"],
+] as const)(
+  "reuses canonical topic %s for the %s variant",
+  async (canonicalTopic, proposedVariant, kind) => {
+    const fixture = createTopicIdentityFixture({
+      topic: canonicalTopic,
+      assessment: "interested",
+      decision: {
+        kind,
+        targetDomain: "engineering",
+        targetTopic: proposedVariant,
+        matchedExistingTopic: canonicalTopic,
+        messageIntent: "既存話題を続ける",
+        reason: "既存候補と意味的に一致する",
+      },
+    });
+
+    const dispatched = await runScheduled(fixture.service, fixture.scope);
+    const logs = await fixture.logs.listRecentInteractionLogs({
+      botId: "ao",
+      userId: "discord-user",
+      limit: 10,
+    });
+
+    assert.match(dispatched?.text ?? "", new RegExp(`話題: ${canonicalTopic}`));
+    assert.equal(logs.at(-1)?.targetTopic, canonicalTopic);
+    assert.equal(fixture.plannerCalls(), 1);
+    assert.deepEqual(fixture.topicCandidates(), [canonicalTopic]);
+  },
+);
+
+test("does not explore an avoided topic through a semantic paraphrase", async () => {
+  const fixture = createTopicIdentityFixture({
+    topic: "野球",
+    assessment: "avoid",
+    initialDomainCandidates: ["baseball", "music"],
+    decision: {
+      kind: "explore",
+      targetDomain: "baseball",
+      targetTopic: "baseball",
+      matchedExistingTopic: "野球",
+      messageIntent: "野球を英語表記で尋ねる",
+      reason: "既存のavoid話題と言い換え関係にある",
+    },
+  });
+
+  const dispatched = await runScheduled(fixture.service, fixture.scope);
+
+  assert.match(dispatched?.text ?? "", /領域: music/);
+  assert.doesNotMatch(dispatched?.text ?? "", /baseball|野球/);
+  assert.equal(fixture.plannerCalls(), 1);
+});
+
+test("accepts a genuinely unknown topic as explore", async () => {
+  const fixture = createTopicIdentityFixture({
+    topic: "testing",
+    assessment: "possible",
+    decision: {
+      kind: "explore",
+      targetDomain: "music",
+      targetTopic: "ambient music",
+      messageIntent: "未知の音楽嗜好を尋ねる",
+      reason: "既存候補と意味的に異なる",
+    },
+  });
+
+  const dispatched = await runScheduled(fixture.service, fixture.scope);
+
+  assert.match(dispatched?.text ?? "", /話題: ambient music/);
+  assert.equal(fixture.plannerCalls(), 1);
+});
+
+test("falls back to an untried domain for invalid matchedExistingTopic", async () => {
+  const fixture = createTopicIdentityFixture({
+    topic: "testing",
+    assessment: "possible",
+    initialDomainCandidates: ["sports", "music"],
+    decision: {
+      kind: "refine",
+      targetDomain: "sports",
+      targetTopic: "baseball",
+      matchedExistingTopic: "not-a-candidate",
+      messageIntent: "不正候補を使う",
+      reason: "候補外match",
+    },
+  });
+
+  const dispatched = await runScheduled(fixture.service, fixture.scope);
+
+  assert.match(dispatched?.text ?? "", /判断種別: explore/);
+  assert.match(dispatched?.text ?? "", /領域: music/);
+  assert.equal(fixture.plannerCalls(), 1);
+});
+
 test("runTrigger uses exploit research result in instruction and interaction log", async () => {
   const enqueued: ScheduledAgentInput[] = [];
   const interactionLogStore = createInMemoryInteractionLogStore();
@@ -828,6 +925,56 @@ function createTestService(
   });
 }
 
+function createTopicIdentityFixture(input: {
+  topic: string;
+  assessment: TopicStateSnapshot["topics"][number]["assessment"];
+  decision: DialogueDecision;
+  initialDomainCandidates?: string[];
+}) {
+  let calls = 0;
+  let candidates: string[] = [];
+  const logs = createInMemoryInteractionLogStore();
+  const scope = {
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  };
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore({
+      userId: scope.userId,
+      topics: [
+        {
+          topic: input.topic,
+          assessment: input.assessment,
+          evidence: "fixture evidence",
+        },
+      ],
+      updatedAtIso: "2026-09-02T00:00:00.000Z",
+    }),
+    interactionLogStore: logs,
+    initialDomainCandidates: input.initialDomainCandidates ?? ["music"],
+    plannerModel: {
+      generateJson: async (_systemPrompt, userPrompt) => {
+        calls += 1;
+        const parsed = JSON.parse(userPrompt) as {
+          topicCandidates: Array<{ topic: string }>;
+        };
+        candidates = parsed.topicCandidates.map(({ topic }) => topic);
+        return input.decision;
+      },
+    },
+    now: () => new Date("2026-09-02T01:00:00.000Z"),
+  });
+  return {
+    service,
+    logs,
+    scope,
+    plannerCalls: () => calls,
+    topicCandidates: () => candidates,
+  };
+}
+
 const runScheduled = (
   service: ReturnType<typeof createSimplePomdpSystemService>,
   input: { botId: string; threadId: string; userId: string },
@@ -842,10 +989,15 @@ function createDefaultPlannerModel(): DialoguePlanningModel {
           feedbackNote: "ユーザーは前向きな関心を示した",
         };
       }
+      const parsed = JSON.parse(userPrompt) as {
+        topicCandidates?: Array<{ topic: string }>;
+      };
+      const matchedExistingTopic = parsed.topicCandidates?.[0]?.topic;
       return {
         kind: "exploit",
         targetDomain: "IT",
         targetTopic: "implementation",
+        ...(matchedExistingTopic ? { matchedExistingTopic } : {}),
         messageIntent: "最近の実装で役立ちそうな関連情報を短く共有する",
         reason: "実装話題への関心が高そうだから",
       };
