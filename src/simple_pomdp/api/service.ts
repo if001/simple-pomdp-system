@@ -56,6 +56,7 @@ interface RawDialogueDecision {
   kind?: string;
   targetDomain?: string;
   targetTopic?: string;
+  matchedExistingTopic?: string;
   messageIntent?: string;
   reason?: string;
 }
@@ -360,6 +361,10 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       ].join(" "),
       trigger: input.trigger,
       proactiveContext: input.proactiveContext,
+      topicCandidates: input.topicState.topics.slice(-64).map((topic) => ({
+        topic: topic.topic,
+        assessment: topic.assessment,
+      })),
       initialDomainCandidates: input.initialDomainCandidates.slice(0, 24),
     });
     console.log("[decideNextInteraction] raw_prompt: ", raw_prompt);
@@ -374,16 +379,19 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           "exploit は十分に方向性が見えている domain/topic に価値提供する候補です。",
           "assessment=interested の topic は refine や exploit に寄せてください。",
           "assessment=avoid の topic は再提示しないでください。",
+          "topicCandidates は既存TopicStateのcanonical候補です。意味的に同じ話題を選ぶ場合は matchedExistingTopic に候補の topic 値を完全一致で返してください。",
+          "refine/exploit は必ず既存候補へ matchedExistingTopic を設定し、targetTopicの表記ではなくcanonical候補を再利用してください。",
+          "explore は既存候補やavoid候補の言い換えを避け、未知の話題だけを選び、matchedExistingTopicは設定しないでください。",
           "no_response は関心がないことを意味しません。単独の no_response で関心や通知許容度を下げないでください。",
           "無反応がある場合は、特定話題だけか、同じ話題の反復か、時間帯に偏るか、メッセージが重いか、材料不足かを最近の履歴から比較してください。理由を断定せず、次の判断では一度に話題・時刻・提示方法の 1 要素だけを変えてください。",
           "異なる話題でも同じ時間帯に無反応なら提示を短くし、同じ話題だけが続いて無反応なら別領域の短い explore を優先してください。以前 positive だった話題の一度の無反応は関心低下とみなさないでください。",
           "以前おすすめした場所・物・行動を尋ねる場合は、proactiveContext から実際におすすめした事実を確認し、経過時間と現在の曜日・時間帯が自然な場合だけ、訪れた・試したと決めつけず短く尋ねてください。",
-          "必ず kind, targetDomain, optional targetTopic, messageIntent, reason を返してください。reason には現在の状況と履歴に基づく短い判断根拠を書いてください。",
+          "必ず kind, targetDomain, optional targetTopic, optional matchedExistingTopic, messageIntent, reason を返してください。reason には現在の状況と履歴に基づく短い判断根拠を書いてください。",
           "JSON のみを返してください。",
         ].join(" "),
         raw_prompt,
       );
-    const decision = normalizeDialogueDecision(parsed);
+    const decision = normalizeDialogueDecision(parsed, input.topicState);
     const requiresInitialExplore =
       input.topicState.topics.length === 0 && input.triedTopics.length === 0;
     return decision &&
@@ -393,7 +401,11 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       : createFallbackExploreDecision(
           input.initialDomainCandidates,
           input.topicState,
-          input.triedTopics,
+          [
+            ...input.triedTopics,
+            ...(parsed.targetDomain ? [parsed.targetDomain] : []),
+            ...(parsed.targetTopic ? [parsed.targetTopic] : []),
+          ],
         );
   }
 }
@@ -676,6 +688,7 @@ const buildConversationIntegrationInstruction = (
 
 const normalizeDialogueDecision = (
   value: RawDialogueDecision | null | undefined,
+  state: TopicStateSnapshot,
 ): DialogueDecision | null => {
   if (!value) {
     return null;
@@ -691,11 +704,29 @@ const normalizeDialogueDecision = (
     value.targetDomain?.trim() &&
     value.messageIntent?.trim()
   ) {
+    const requestedMatch = value.matchedExistingTopic?.trim();
+    const matched = requestedMatch
+      ? state.topics.find((topic) => topic.topic === requestedMatch)
+      : undefined;
+    if (requestedMatch && !matched) {
+      return null;
+    }
+    if (value.kind === "explore" && matched) {
+      return null;
+    }
+    if (
+      (value.kind === "refine" || value.kind === "exploit") &&
+      !matched
+    ) {
+      return null;
+    }
     return {
       kind: value.kind,
       targetDomain: value.targetDomain.trim(),
-      ...(value.targetTopic?.trim()
-        ? { targetTopic: value.targetTopic.trim() }
+      ...(matched
+        ? { targetTopic: matched.topic }
+        : value.targetTopic?.trim()
+          ? { targetTopic: value.targetTopic.trim() }
         : {}),
       messageIntent: value.messageIntent.trim(),
       reason,
