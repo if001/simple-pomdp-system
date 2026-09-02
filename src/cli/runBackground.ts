@@ -32,7 +32,10 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
   if (threadIds.length === 0) {
     return { kind: "empty" as const };
   }
-  const userId = env.SIMPLE_POMDP_USER_ID ?? "discord-user";
+  const userId = deriveBackgroundUserId(
+    threadIds,
+    env.SIMPLE_POMDP_USER_ID,
+  );
   const storeDir = env.SIMPLE_POMDP_STORE_DIR ?? "data/simple-pomdp-system";
   const queueFilePath = requiredFromEnv(env, "SIMPLE_POMDP_QUEUE_FILE");
   const queueApi = createQueueApi(new FileQueueStore(queueFilePath));
@@ -195,6 +198,43 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       initialDomainCount: initialDomainCandidates.length,
     },
   };
+};
+
+export const deriveBackgroundUserId = (
+  threadIds: string[],
+  explicitUserId?: string,
+): string => {
+  if (threadIds.length === 0) {
+    throw new Error("At least one background thread ID is required");
+  }
+  const userIds = threadIds.map(parseThreadUserId);
+  const userId = userIds[0] as string;
+  if (userIds.some((candidate) => candidate !== userId)) {
+    throw new Error(
+      "SIMPLE_POMDP_THREAD_IDS must all belong to the same user",
+    );
+  }
+  const configured = explicitUserId?.trim();
+  if (configured && configured !== userId) {
+    throw new Error(
+      `SIMPLE_POMDP_USER_ID does not match thread userId: ${configured} !== ${userId}`,
+    );
+  }
+  return userId;
+};
+
+const parseThreadUserId = (threadId: string): string => {
+  const separator = threadId.indexOf(":");
+  if (
+    separator <= 0 ||
+    separator === threadId.length - 1 ||
+    threadId.indexOf(":", separator + 1) >= 0
+  ) {
+    throw new Error(
+      `Invalid SIMPLE_POMDP_THREAD_IDS entry; expected channelId:userId: ${threadId}`,
+    );
+  }
+  return threadId.slice(separator + 1);
 };
 
 const loadKnowledgeAccess = (): {
