@@ -49,13 +49,15 @@ test("fixed journey progresses explore to refine to exploit with one traced disp
   };
   const topicStateStore: TopicStateStore = {
     getTopicState: async () => state,
-    saveTopicState: async (next) => {
+    saveTopicState: async ({ state: next }) => {
       state = next;
     },
   };
   const interactionLogStore: InteractionLogStore = {
-    listRecentInteractionLogs: async ({ userId, limit }) =>
-      logs.filter((log) => log.userId === userId).slice(-limit),
+    listRecentInteractionLogs: async ({ botId, userId, limit }) =>
+      logs
+        .filter((log) => log.botId === botId && log.userId === userId)
+        .slice(-limit),
     saveInteractionLog: async (next) => {
       const index = logs.findIndex((log) => log.id === next.id);
       if (index >= 0) {

@@ -72,6 +72,7 @@ test("conversation trigger returns one integration instruction without enqueuein
   assert.equal(enqueued.length, 0);
   assert.match(output.text, /次の話題を自然に統合/);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -111,6 +112,7 @@ test("concurrent scheduled triggers share one dispatch", async () => {
   assert.equal(first.sourceInteractionId, second.sourceInteractionId);
   assert.equal(enqueued.length, 1);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -262,7 +264,10 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
 
   assert.ok(dispatched);
   assert.match(dispatched?.text ?? "", /判断種別: refine/);
-  const state = await service.listTopicState({ userId: "discord-user" });
+  const state = await service.listTopicState({
+    botId: "ao",
+    userId: "discord-user",
+  });
   assert.deepEqual(state?.topics, [
     {
       topic: "implementation",
@@ -272,6 +277,7 @@ test("scheduled proactive positive reaction updates the linked InteractionLog", 
     },
   ]);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -327,7 +333,10 @@ test("scheduled proactive continuation updates existing topic state", async () =
     userId: "discord-user",
   });
 
-  const state = await service.listTopicState({ userId: "discord-user" });
+  const state = await service.listTopicState({
+    botId: "ao",
+    userId: "discord-user",
+  });
   assert.equal(state?.topics.length, 1);
   assert.equal(state?.topics[0]?.topic, "implementation");
   assert.equal(state?.topics[0]?.assessment, "interested");
@@ -391,6 +400,7 @@ test("scheduled proactive negative reaction updates the linked InteractionLog", 
   });
 
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -512,6 +522,7 @@ test("conversation-trigger reaction uses only the linked human user evidence", a
   assert.doesNotMatch(observedPrompt, /assistant text/);
   assert.doesNotMatch(planningPrompt, /internal delegation/);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -570,9 +581,13 @@ test("no_response updates the InteractionLog without changing state", async () =
     userId: "discord-user",
   });
 
-  const state = await service.listTopicState({ userId: "discord-user" });
+  const state = await service.listTopicState({
+    botId: "ao",
+    userId: "discord-user",
+  });
   assert.deepEqual(state, initialState);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -618,13 +633,17 @@ test("runTrigger expires pending interaction after timeout even without enough t
   });
 
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
   const expired = logs.find((log) => log.id === "log-3");
   assert.equal(expired?.status, "expired");
   assert.equal(expired?.observation, "no_response");
-  assert.equal(await service.listTopicState({ userId: "discord-user" }), null);
+  assert.equal(
+    await service.listTopicState({ botId: "ao", userId: "discord-user" }),
+    null,
+  );
 });
 
 test("initial state falls back to an untried explore decision", async () => {
@@ -683,6 +702,7 @@ test("initial state falls back to an untried explore decision", async () => {
   assert.match(capturedPrompt, /observation=no_response/);
   assert.match(capturedPrompt, /interaction at=2026-06-14T00:00:00.000Z/);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -774,6 +794,7 @@ test("runTrigger uses exploit research result in instruction and interaction log
   assert.match(enqueued[0]?.text ?? "", /調査結果: TypeScript の新しい更新点/);
   assert.match(enqueued[0]?.text ?? "", /articleIds: article_1/);
   const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
     userId: "discord-user",
     limit: 10,
   });
@@ -846,7 +867,7 @@ function createInMemoryTopicStateStore(
   let item = initial;
   return {
     getTopicState: async () => item,
-    saveTopicState: async (state) => {
+    saveTopicState: async ({ state }) => {
       item = state;
     },
   };
@@ -857,8 +878,10 @@ function createInMemoryInteractionLogStore(
 ): InteractionLogStore {
   const items = [...initial];
   return {
-    listRecentInteractionLogs: async ({ userId, limit }) =>
-      items.filter((log) => log.userId === userId).slice(-limit),
+    listRecentInteractionLogs: async ({ botId, userId, limit }) =>
+      items
+        .filter((log) => log.botId === botId && log.userId === userId)
+        .slice(-limit),
     saveInteractionLog: async (log) => {
       const next = items.filter((item) => item.id !== log.id);
       next.push(log);

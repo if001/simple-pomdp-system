@@ -116,28 +116,34 @@ test("topic and interaction source reads one user and filters interaction scope"
     interaction("wrong-bot", "aka", "thread-1"),
     interaction("wrong-thread", "ao", "thread-2"),
   ];
-  const beliefCalls: string[] = [];
+  const beliefCalls: unknown[] = [];
   const logCalls: unknown[] = [];
   const source = createTopicStateInteractionLogContextSource({
     limit: 4,
     topicStateReader: {
-      getTopicState: async (userId) => {
-        beliefCalls.push(userId);
+      getTopicState: async (readerInput) => {
+        beliefCalls.push(readerInput);
         return state;
       },
     },
     interactionLogReader: {
       listRecentInteractionLogs: async (readerInput) => {
         logCalls.push(readerInput);
-        return logs;
+        return logs.filter(
+          (log) =>
+            log.botId === readerInput.botId &&
+            log.userId === readerInput.userId,
+        );
       },
     },
   });
 
   const context = await source.load(input);
 
-  assert.deepEqual(beliefCalls, ["user-1"]);
-  assert.deepEqual(logCalls, [{ userId: "user-1", limit: 4 }]);
+  assert.deepEqual(beliefCalls, [{ botId: "ao", userId: "user-1" }]);
+  assert.deepEqual(logCalls, [
+    { botId: "ao", userId: "user-1", limit: 4 },
+  ]);
   assert.match(context.join(" "), /topic=testing/);
   assert.match(context.join(" "), /message=matching/);
   assert.doesNotMatch(context.join(" "), /wrong-bot|wrong-thread/);

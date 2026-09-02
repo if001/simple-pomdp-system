@@ -18,16 +18,18 @@ export const createFileInteractionLogStore = (
 
   return {
     async listRecentInteractionLogs(input) {
-      const file = await readLogFile(options.baseDir, input.userId);
+      const file = await readLogFile(options.baseDir, input.botId, input.userId);
       return file.logs.slice(-Math.max(1, input.limit));
     },
     async saveInteractionLog(log) {
-      const file = await readLogFile(options.baseDir, log.userId);
+      const file = await readLogFile(options.baseDir, log.botId, log.userId);
       const next = file.logs.filter((item) => item.id !== log.id);
       next.push(log);
-      await mkdir(options.baseDir, { recursive: true });
+      await mkdir(join(options.baseDir, encodeKey(log.botId)), {
+        recursive: true,
+      });
       await writeFile(
-        toFilePath(options.baseDir, log.userId),
+        toFilePath(options.baseDir, log.botId, log.userId),
         JSON.stringify({ logs: next.slice(-maxLogsPerUser) }, null, 2),
         "utf8",
       );
@@ -37,10 +39,11 @@ export const createFileInteractionLogStore = (
 
 const readLogFile = async (
   baseDir: string,
+  botId: string,
   userId: string,
 ): Promise<InteractionLogFile> => {
   try {
-    const raw = await readFile(toFilePath(baseDir, userId), "utf8");
+    const raw = await readFile(toFilePath(baseDir, botId, userId), "utf8");
     const parsed = JSON.parse(raw) as InteractionLogFile;
     if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.logs)) {
       return { logs: [] };
@@ -51,8 +54,8 @@ const readLogFile = async (
   }
 };
 
-const toFilePath = (baseDir: string, userId: string): string =>
-  join(baseDir, `${sanitize(userId)}.json`);
+const toFilePath = (baseDir: string, botId: string, userId: string): string =>
+  join(baseDir, encodeKey(botId), `${encodeKey(userId)}.json`);
 
-const sanitize = (value: string): string =>
-  value.replace(/[^a-zA-Z0-9_-]/g, "_");
+const encodeKey = (value: string): string =>
+  Buffer.from(value, "utf8").toString("base64url");

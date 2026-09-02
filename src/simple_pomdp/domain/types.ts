@@ -162,12 +162,20 @@ export interface DialoguePlanningModel {
 }
 
 export interface TopicStateStore {
-  getTopicState(userId: string): Promise<TopicStateSnapshot | null>;
-  saveTopicState(state: TopicStateSnapshot): Promise<void>;
+  getTopicState(input: {
+    botId: string;
+    userId: string;
+  }): Promise<TopicStateSnapshot | null>;
+  saveTopicState(input: {
+    botId: string;
+    userId: string;
+    state: TopicStateSnapshot;
+  }): Promise<void>;
 }
 
 export interface InteractionLogStore {
   listRecentInteractionLogs(input: {
+    botId: string;
     userId: string;
     limit: number;
   }): Promise<InteractionLog[]>;

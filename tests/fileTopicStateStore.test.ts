@@ -23,9 +23,32 @@ test("file topic state store round-trips the new schema", async () => {
       updatedAtIso: "2026-09-01T00:01:00.000Z",
     };
 
-    await store.saveTopicState(state);
+    await store.saveTopicState({ botId: "ao", userId: "user-1", state });
+    const akaState: TopicStateSnapshot = {
+      userId: "user-1",
+      topics: [
+        {
+          topic: "料理",
+          assessment: "possible",
+          evidence: "別botでのみ観測した",
+        },
+      ],
+      updatedAtIso: "2026-09-01T00:02:00.000Z",
+    };
+    await store.saveTopicState({
+      botId: "aka",
+      userId: "user-1",
+      state: akaState,
+    });
 
-    assert.deepEqual(await store.getTopicState("user-1"), state);
+    assert.deepEqual(
+      await store.getTopicState({ botId: "ao", userId: "user-1" }),
+      state,
+    );
+    assert.deepEqual(
+      await store.getTopicState({ botId: "aka", userId: "user-1" }),
+      akaState,
+    );
     assert.deepEqual(Object.keys(state.topics[0] ?? {}).sort(), [
       "assessment",
       "evidence",

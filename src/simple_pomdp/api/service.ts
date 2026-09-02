@@ -18,7 +18,10 @@ import {
 } from "../domain/types";
 
 export interface SimplePomdpSystemService {
-  listTopicState(input: { userId: string }): Promise<TopicStateSnapshot | null>;
+  listTopicState(input: {
+    botId: string;
+    userId: string;
+  }): Promise<TopicStateSnapshot | null>;
   runTrigger(input: {
     botId: string;
     threadId: string;
@@ -89,9 +92,10 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
   }
 
   async listTopicState(input: {
+    botId: string;
     userId: string;
   }): Promise<TopicStateSnapshot | null> {
-    return this.options.topicStateStore.getTopicState(input.userId);
+    return this.options.topicStateStore.getTopicState(input);
   }
 
   async runTrigger(input: {
@@ -124,10 +128,14 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     await this.refreshTopicStateFromPendingInteractions(input);
 
     const topicState =
-      (await this.options.topicStateStore.getTopicState(input.userId)) ??
+      (await this.options.topicStateStore.getTopicState({
+        botId: input.botId,
+        userId: input.userId,
+      })) ??
       createDefaultTopicState(input.userId, this.now().toISOString());
     const interactionLogs = (
       await this.options.interactionLogStore.listRecentInteractionLogs({
+        botId: input.botId,
         userId: input.userId,
         limit: this.interactionLogLimit,
       })
@@ -254,6 +262,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
   }): Promise<void> {
     const logs =
       await this.options.interactionLogStore.listRecentInteractionLogs({
+        botId: input.botId,
         userId: input.userId,
         limit: this.interactionLogLimit,
       });
@@ -270,7 +279,10 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       `refresh start threadId=${input.threadId} pendingInteractions=${pending.length}`,
     );
     let topicState =
-      (await this.options.topicStateStore.getTopicState(input.userId)) ??
+      (await this.options.topicStateStore.getTopicState({
+        botId: input.botId,
+        userId: input.userId,
+      })) ??
       createDefaultTopicState(input.userId, this.now().toISOString());
     const turns = await this.options.turnRecordReader.listRecentTurnRecords({
       botId: input.botId,
@@ -317,7 +329,11 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         completedLog,
         this.now().toISOString(),
       );
-      await this.options.topicStateStore.saveTopicState(nextTopicState);
+      await this.options.topicStateStore.saveTopicState({
+        botId: input.botId,
+        userId: input.userId,
+        state: nextTopicState,
+      });
       logSimplePomdp(
         `topic state saved threadId=${input.threadId} interactionId=${log.id} topics=${nextTopicState.topics.length}`,
       );
