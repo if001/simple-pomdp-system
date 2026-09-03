@@ -81,6 +81,92 @@ test("conversation trigger returns one integration instruction without enqueuein
   assert.equal(logs[0]?.id, output.sourceInteractionId);
 });
 
+test("same-time interactions have unique IDs across threads and trigger types", async () => {
+  const interactionLogStore = createInMemoryInteractionLogStore();
+  const enqueued: ScheduledAgentInput[] = [];
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore,
+    backgroundInputSink: { enqueue: async (input) => enqueued.push(input) },
+    maxPendingInteractions: 10,
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+
+  const first = await service.runTrigger({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+    trigger: "conversation",
+  });
+  const second = await service.runTrigger({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+    trigger: "scheduled",
+  });
+  const otherThread = await service.runTrigger({
+    botId: "ao",
+    threadId: "thread-2",
+    userId: "discord-user",
+    trigger: "scheduled",
+  });
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.ok(otherThread);
+  assert.equal(new Set([
+    first.sourceInteractionId,
+    second.sourceInteractionId,
+    otherThread.sourceInteractionId,
+  ]).size, 3);
+  assert.deepEqual(
+    enqueued.map((input) => input.sourceInteractionId),
+    [second.sourceInteractionId, otherThread.sourceInteractionId],
+  );
+  const logs = await interactionLogStore.listRecentInteractionLogs({
+    botId: "ao",
+    userId: "discord-user",
+    limit: 10,
+  });
+  assert.deepEqual(
+    logs.map((log) => log.id),
+    [first.sourceInteractionId, second.sourceInteractionId, otherThread.sourceInteractionId],
+  );
+});
+
+test("scheduled interaction is persisted before it is enqueued", async () => {
+  const events: string[] = [];
+  const store = createInMemoryInteractionLogStore();
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore: {
+      listRecentInteractionLogs: store.listRecentInteractionLogs,
+      saveInteractionLog: async (log) => {
+        events.push(`saved:${log.id}`);
+        await store.saveInteractionLog(log);
+      },
+    },
+    backgroundInputSink: {
+      enqueue: async (input) => events.push(`queued:${input.sourceInteractionId}`),
+    },
+    now: () => new Date("2026-06-14T01:00:00.000Z"),
+  });
+
+  const output = await runScheduled(service, {
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  assert.ok(output);
+  assert.deepEqual(events, [
+    `saved:${output.sourceInteractionId}`,
+    `queued:${output.sourceInteractionId}`,
+  ]);
+});
+
 test("concurrent scheduled triggers share one dispatch", async () => {
   const enqueued: ScheduledAgentInput[] = [];
   const interactionLogStore = createInMemoryInteractionLogStore();

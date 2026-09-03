@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   BackgroundInputSink,
   DialogueDecision,
@@ -213,7 +214,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           })
         : null;
 
-    const interactionId = `pomdp_${sanitize(input.userId)}_${this.now().toISOString()}`;
+    const interactionId = `pomdp_${randomUUID()}`;
     const output: ProactiveTriggerOutput = {
       trigger: input.trigger,
       botId: input.botId,
@@ -224,9 +225,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           : buildBackgroundInstruction(decision, exploitResearch),
       sourceInteractionId: interactionId,
     };
-    if (output.trigger === "scheduled" && this.options.backgroundInputSink) {
-      await this.options.backgroundInputSink.enqueue(output);
-    }
     await this.options.interactionLogStore.saveInteractionLog({
       id: interactionId,
       userId: input.userId,
@@ -250,6 +248,9 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       observeWindowTurns: this.observeWindowTurns,
       createdAtIso: this.now().toISOString(),
     });
+    if (output.trigger === "scheduled" && this.options.backgroundInputSink) {
+      await this.options.backgroundInputSink.enqueue(output);
+    }
     logSimplePomdp(
       `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} decision=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
     );
@@ -821,6 +822,3 @@ const isPendingInteraction = (log: InteractionLog): boolean =>
   log.status === "pending" ||
   ((log.status === undefined || log.status === null) &&
     log.observation === "unknown");
-
-const sanitize = (value: string): string =>
-  value.replace(/[^a-zA-Z0-9_-]/g, "_");

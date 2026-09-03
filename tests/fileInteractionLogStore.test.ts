@@ -52,6 +52,32 @@ test("file interaction log store requires and isolates bot scope", async () => {
   }
 });
 
+test("concurrent saves retain interactions for different threads", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "interaction-log-store-"));
+  try {
+    const store = createFileInteractionLogStore({ baseDir });
+    await Promise.all([
+      store.saveInteractionLog({
+        ...interaction("interaction-1", "ao"),
+        threadId: "thread-1",
+      }),
+      store.saveInteractionLog({
+        ...interaction("interaction-2", "ao"),
+        threadId: "thread-2",
+      }),
+    ]);
+
+    const logs = await store.listRecentInteractionLogs({
+      botId: "ao",
+      userId: "user-1",
+      limit: 10,
+    });
+    assert.deepEqual(logs.map((log) => log.id), ["interaction-1", "interaction-2"]);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 const interaction = (id: string, botId: string): InteractionLog => ({
   id,
   botId,
