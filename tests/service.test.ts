@@ -769,6 +769,12 @@ test("initial state falls back to an untried explore decision", async () => {
         return {
           kind: "wait",
           reason: "invalid planner output",
+          fallbackDecision: {
+            kind: "explore",
+            targetDomain: "music",
+            messageIntent: "音楽への関心を短く尋ねる",
+            reason: "安全な未試行候補へ切り替える",
+          },
         };
       },
     },
@@ -824,6 +830,12 @@ test("an avoided topic is rejected and replaced with an allowed explore", async 
         targetTopic: "baseball",
         messageIntent: "野球の情報を再提示する",
         reason: "以前試したため",
+        fallbackDecision: {
+          kind: "explore",
+          targetDomain: "music",
+          messageIntent: "別領域の関心を尋ねる",
+          reason: "avoid候補から離れる",
+        },
       }),
     },
     now: () => new Date("2026-06-14T02:00:00.000Z"),
@@ -885,6 +897,12 @@ test("does not explore an avoided topic through a semantic paraphrase", async ()
       matchedExistingTopic: "野球",
       messageIntent: "野球を英語表記で尋ねる",
       reason: "既存のavoid話題と言い換え関係にある",
+      fallbackDecision: {
+        kind: "explore",
+        targetDomain: "music",
+        messageIntent: "別領域の関心を尋ねる",
+        reason: "avoid候補の言い換えを避ける",
+      },
     },
   });
 
@@ -926,6 +944,12 @@ test("falls back to an untried domain for invalid matchedExistingTopic", async (
       matchedExistingTopic: "not-a-candidate",
       messageIntent: "不正候補を使う",
       reason: "候補外match",
+      fallbackDecision: {
+        kind: "explore",
+        targetDomain: "music",
+        messageIntent: "検証可能な代替候補を使う",
+        reason: "primaryのcanonical参照が不正なため",
+      },
     },
   });
 
@@ -933,6 +957,96 @@ test("falls back to an untried domain for invalid matchedExistingTopic", async (
 
   assert.match(dispatched?.text ?? "", /判断種別: explore/);
   assert.match(dispatched?.text ?? "", /領域: music/);
+  assert.equal(fixture.plannerCalls(), 1);
+});
+
+test("uses canonical topic from a validated fallback decision", async () => {
+  const fixture = createTopicIdentityFixture({
+    topic: "TypeScript",
+    assessment: "interested",
+    decision: {
+      kind: "exploit",
+      targetDomain: "engineering",
+      targetTopic: "typescript",
+      matchedExistingTopic: "missing-topic",
+      messageIntent: "不正なprimary候補",
+      reason: "primaryを不採用にする",
+      fallbackDecision: {
+        kind: "refine",
+        targetDomain: "engineering",
+        targetTopic: " type script ",
+        matchedExistingTopic: "TypeScript",
+        messageIntent: "既存話題を安全に続ける",
+        reason: "大文字小文字と空白の表記揺れは既存候補と同じ",
+      },
+    },
+  });
+
+  const dispatched = await runScheduled(fixture.service, fixture.scope);
+  const logs = await fixture.logs.listRecentInteractionLogs({
+    botId: "ao",
+    userId: "discord-user",
+    limit: 10,
+  });
+
+  assert.match(dispatched?.text ?? "", /話題: TypeScript/);
+  assert.equal(logs.at(-1)?.targetTopic, "TypeScript");
+  assert.equal(fixture.plannerCalls(), 1);
+});
+
+test("uses a validated fallback when the primary decision is incomplete", async () => {
+  let plannerCalls = 0;
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    plannerModel: {
+      generateJson: async () => {
+        plannerCalls += 1;
+        return {
+          kind: "explore",
+          targetDomain: "sports",
+          fallbackDecision: {
+            kind: "explore",
+            targetDomain: "music",
+            messageIntent: "音楽への関心を短く尋ねる",
+            reason: "完全な代替候補を使う",
+          },
+        };
+      },
+    },
+    now: () => new Date("2026-09-03T00:00:00.000Z"),
+  });
+
+  const dispatched = await runScheduled(service, {
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+  });
+
+  assert.match(dispatched?.text ?? "", /領域: music/);
+  assert.equal(plannerCalls, 1);
+});
+
+test("uses topic-neutral fallback when no semantically safe candidate is returned", async () => {
+  const fixture = createTopicIdentityFixture({
+    topic: "野球",
+    assessment: "avoid",
+    initialDomainCandidates: ["baseball"],
+    decision: {
+      kind: "explore",
+      targetDomain: "baseball",
+      targetTopic: "baseball",
+      matchedExistingTopic: "野球",
+      messageIntent: "avoid話題を言い換える",
+      reason: "不安全なprimary",
+    },
+  });
+
+  const dispatched = await runScheduled(fixture.service, fixture.scope);
+
+  assert.match(dispatched?.text ?? "", /領域: general interests/);
+  assert.doesNotMatch(dispatched?.text ?? "", /baseball|野球/);
   assert.equal(fixture.plannerCalls(), 1);
 });
 
@@ -1014,7 +1128,7 @@ function createTestService(
 function createTopicIdentityFixture(input: {
   topic: string;
   assessment: TopicStateSnapshot["topics"][number]["assessment"];
-  decision: DialogueDecision;
+  decision: DialogueDecision & { fallbackDecision?: DialogueDecision };
   initialDomainCandidates?: string[];
 }) {
   let calls = 0;

@@ -18,13 +18,20 @@ test("fixed journey progresses explore to refine to exploit with one traced disp
   const enqueued: ScheduledAgentInput[] = [];
   let state: TopicStateSnapshot | null = null;
   let now = new Date("2026-09-01T00:00:00.000Z");
-  const decisions: DialogueDecision[] = [
+  const decisions: Array<DialogueDecision & { fallbackDecision?: DialogueDecision }> = [
     {
-      kind: "explore",
+      kind: "exploit",
       targetDomain: "engineering",
-      targetTopic: "testing",
-      messageIntent: "テストへの関心を短く確認する",
-      reason: "未試行領域を探索する",
+      targetTopic: "known testing",
+      messageIntent: "初回には不適切なprimary候補",
+      reason: "fixtureでprimary不採用を確認する",
+      fallbackDecision: {
+        kind: "explore",
+        targetDomain: "engineering",
+        targetTopic: "testing",
+        messageIntent: "テストへの関心を短く確認する",
+        reason: "未試行領域を安全に探索する",
+      },
     },
     {
       kind: "refine",
