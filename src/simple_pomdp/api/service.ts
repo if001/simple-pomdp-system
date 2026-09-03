@@ -62,6 +62,10 @@ interface RawDialogueDecision {
   reason?: string;
 }
 
+interface RawDialoguePlan extends RawDialogueDecision {
+  fallbackDecision?: RawDialogueDecision;
+}
+
 class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
   private readonly recentTurnLimit: number;
   private readonly interactionLogLimit: number;
@@ -370,7 +374,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     });
     console.log("[decideNextInteraction] raw_prompt: ", raw_prompt);
     const parsed =
-      await this.options.plannerModel.generateJson<RawDialogueDecision>(
+      await this.options.plannerModel.generateJson<RawDialoguePlan>(
         [
           "あなたは POMDP ベースの proactive dialogue planner です。",
           "trigger は conversation または scheduled です。どちらでも発話タイミングは決定済みです。",
@@ -383,31 +387,34 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
           "topicCandidates は既存TopicStateのcanonical候補です。意味的に同じ話題を選ぶ場合は matchedExistingTopic に候補の topic 値を完全一致で返してください。",
           "refine/exploit は必ず既存候補へ matchedExistingTopic を設定し、targetTopicの表記ではなくcanonical候補を再利用してください。",
           "explore は既存候補やavoid候補の言い換えを避け、未知の話題だけを選び、matchedExistingTopicは設定しないでください。",
+          "primaryの判断に加え、primaryが構造検証で不採用になった場合の fallbackDecision も同じ形式で返してください。fallbackDecisionにも意味的同一性を判定し、既存topicと同じならcanonicalな matchedExistingTopic を設定してください。",
+          "fallbackDecisionはprimaryと異なる安全な候補にしてください。安全な代替候補がなければfallbackDecisionを省略してください。",
           "no_response は関心がないことを意味しません。単独の no_response で関心や通知許容度を下げないでください。",
           "無反応がある場合は、特定話題だけか、同じ話題の反復か、時間帯に偏るか、メッセージが重いか、材料不足かを最近の履歴から比較してください。理由を断定せず、次の判断では一度に話題・時刻・提示方法の 1 要素だけを変えてください。",
           "異なる話題でも同じ時間帯に無反応なら提示を短くし、同じ話題だけが続いて無反応なら別領域の短い explore を優先してください。以前 positive だった話題の一度の無反応は関心低下とみなさないでください。",
           "以前おすすめした場所・物・行動を尋ねる場合は、proactiveContext から実際におすすめした事実を確認し、経過時間と現在の曜日・時間帯が自然な場合だけ、訪れた・試したと決めつけず短く尋ねてください。",
-          "必ず kind, targetDomain, optional targetTopic, optional matchedExistingTopic, messageIntent, reason を返してください。reason には現在の状況と履歴に基づく短い判断根拠を書いてください。",
+          "必ずprimaryとして kind, targetDomain, optional targetTopic, optional matchedExistingTopic, messageIntent, reason を返し、可能なら同じ項目を持つ fallbackDecision も返してください。reason には現在の状況と履歴に基づく短い判断根拠を書いてください。",
           "JSON のみを返してください。",
         ].join(" "),
         raw_prompt,
       );
-    const decision = normalizeDialogueDecision(parsed, input.topicState);
     const requiresInitialExplore =
       input.topicState.topics.length === 0 && input.triedTopics.length === 0;
-    return decision &&
-      !isAvoidedDecision(decision, input.topicState) &&
-      (!requiresInitialExplore || decision.kind === "explore")
-      ? decision
-      : createFallbackExploreDecision(
-          input.initialDomainCandidates,
-          input.topicState,
-          [
-            ...input.triedTopics,
-            ...(parsed.targetDomain ? [parsed.targetDomain] : []),
-            ...(parsed.targetTopic ? [parsed.targetTopic] : []),
-          ],
-        );
+    const primary = normalizeDialogueDecision(parsed, input.topicState);
+    if (isAcceptableDecision(primary, input.topicState, requiresInitialExplore)) {
+      return primary;
+    }
+    const fallback = normalizeDialogueDecision(
+      parsed?.fallbackDecision,
+      input.topicState,
+    );
+    return isAcceptableDecision(
+      fallback,
+      input.topicState,
+      requiresInitialExplore,
+    )
+      ? fallback
+      : createSafeFallbackExploreDecision();
   }
 }
 
@@ -750,38 +757,21 @@ const isAvoidedDecision = (
   );
 };
 
-const createFallbackExploreDecision = (
-  initialDomainCandidates: string[],
+const isAcceptableDecision = (
+  decision: DialogueDecision | null,
   state: TopicStateSnapshot,
-  triedTopics: string[],
-): DialogueDecision => {
-  const known = new Set(
-    [...state.topics.map((topic) => topic.topic), ...triedTopics].map((topic) =>
-      topic.trim().toLowerCase(),
-    ),
-  );
-  const allowed = initialDomainCandidates.filter((candidate) => {
-    const normalized = candidate.trim().toLowerCase();
-    return (
-      normalized.length > 0 &&
-      !state.topics.some(
-        (topic) =>
-          topic.assessment === "avoid" &&
-          topic.topic.trim().toLowerCase() === normalized,
-      )
-    );
-  });
-  const targetDomain =
-    allowed.find((candidate) => !known.has(candidate.trim().toLowerCase())) ??
-    allowed[0] ??
-    "general interests";
-  return {
+  requiresInitialExplore: boolean,
+): decision is DialogueDecision =>
+  decision !== null &&
+  !isAvoidedDecision(decision, state) &&
+  (!requiresInitialExplore || decision.kind === "explore");
+
+const createSafeFallbackExploreDecision = (): DialogueDecision => ({
     kind: "explore",
-    targetDomain,
-    messageIntent: `${targetDomain}について関心があるか短く尋ねる`,
-    reason: "有効な候補がないため、未試行の表面的な領域を探索する",
-  };
-};
+    targetDomain: "general interests",
+    messageIntent: "一般的な関心について短く尋ねる",
+    reason: "意味的に安全な代替候補を検証できなかったため、特定話題を避けて探索する",
+  });
 
 const formatRecentTurns = (turns: TurnRecord[]): string[] =>
   turns
