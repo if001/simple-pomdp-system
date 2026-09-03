@@ -15,6 +15,7 @@ export const createFileInteractionLogStore = (
   options: FileInteractionLogStoreOptions,
 ): InteractionLogStore => {
   const maxLogsPerUser = Math.max(1, options.maxLogsPerUser ?? 200);
+  const writesByFile = new Map<string, Promise<void>>();
 
   return {
     async listRecentInteractionLogs(input) {
@@ -22,17 +23,29 @@ export const createFileInteractionLogStore = (
       return file.logs.slice(-Math.max(1, input.limit));
     },
     async saveInteractionLog(log) {
-      const file = await readLogFile(options.baseDir, log.botId, log.userId);
-      const next = file.logs.filter((item) => item.id !== log.id);
-      next.push(log);
-      await mkdir(join(options.baseDir, encodeKey(log.botId)), {
-        recursive: true,
+      const filePath = toFilePath(options.baseDir, log.botId, log.userId);
+      const previous = writesByFile.get(filePath) ?? Promise.resolve();
+      const write = previous.catch(() => undefined).then(async () => {
+        const file = await readLogFile(options.baseDir, log.botId, log.userId);
+        const next = file.logs.filter((item) => item.id !== log.id);
+        next.push(log);
+        await mkdir(join(options.baseDir, encodeKey(log.botId)), {
+          recursive: true,
+        });
+        await writeFile(
+          filePath,
+          JSON.stringify({ logs: next.slice(-maxLogsPerUser) }, null, 2),
+          "utf8",
+        );
       });
-      await writeFile(
-        toFilePath(options.baseDir, log.botId, log.userId),
-        JSON.stringify({ logs: next.slice(-maxLogsPerUser) }, null, 2),
-        "utf8",
-      );
+      writesByFile.set(filePath, write);
+      try {
+        await write;
+      } finally {
+        if (writesByFile.get(filePath) === write) {
+          writesByFile.delete(filePath);
+        }
+      }
     },
   };
 };
