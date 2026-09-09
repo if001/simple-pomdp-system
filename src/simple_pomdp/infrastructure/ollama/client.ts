@@ -9,6 +9,7 @@ export class OllamaDialoguePlanningClient implements DialoguePlanningModel {
   ) {}
 
   async generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T> {
+    console.log("[simple-pomdp] call llm");
     const response = await this.fetchFn(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: {
