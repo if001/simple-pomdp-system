@@ -15,6 +15,7 @@
     "start:background": "tsx --env-file=.env.ao src/cli/runBackground.ts"
   },
   "dependencies": {
+    "@chat-agent/knowledge-access": "file:../knowledge-access",
     "@chat-agent/memory-system": "file:../memory-system",
     "@chat-agent/queue": "file:../queue",
     "@langchain/core": "^1.0.5",
