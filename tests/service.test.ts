@@ -237,7 +237,7 @@ test("runTrigger loads injected proactive context sources with planner scope", a
   });
 
   assert.deepEqual(calls, [
-    { botId: "ao", threadId: "thread-1", userId: "discord-user" },
+    { botId: "ao", threadId: "thread-1", userId: "discord-user", currentContext: "" },
   ]);
   assert.match(plannerPrompt, /fake context item/);
   assert.doesNotMatch(plannerPrompt, /userBeliefSummary/);

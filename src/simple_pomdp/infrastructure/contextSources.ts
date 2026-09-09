@@ -5,6 +5,7 @@ import {
   TurnRecordReader,
   TopicStateStore,
   UserMemoryReader,
+  KnowledgeAccessService,
 } from "../domain/types";
 
 interface ContextLimitOptions {
@@ -57,6 +58,44 @@ export const createUserMemoryContextSource = (options: {
         .filter((item) => item !== "[user-memory]");
     },
   };
+};
+
+export const createSavedKnowledgeContextSource = (options: {
+  knowledgeAccessService: Pick<KnowledgeAccessService, "searchSavedKnowledge">;
+} & ContextLimitOptions): ProactiveContextSource => {
+  const limit = positiveInteger(options.limit, 3);
+  const maxItemLength = positiveInteger(options.maxItemLength, 520);
+  return {
+    name: "shared-saved-knowledge",
+    async load(input) {
+      const query = await buildKnowledgeQuery(input, options);
+      if (!query) {
+        return [];
+      }
+      const results = await options.knowledgeAccessService.searchSavedKnowledge({
+        query,
+        limit,
+        minScore: 0.35,
+      });
+      return results.slice(0, limit).map((item) =>
+        compact(
+          `[shared-article] articleId=${item.articleId} title=${item.title} summary=${item.summary} tags=${item.tags.join(", ")} url=${item.url}`,
+          maxItemLength,
+        ),
+      );
+    },
+  };
+};
+
+const buildKnowledgeQuery = async (
+  input: Parameters<ProactiveContextSource["load"]>[0],
+  options: { knowledgeAccessService: Pick<KnowledgeAccessService, "searchSavedKnowledge"> } & ContextLimitOptions,
+): Promise<string> => {
+  void options;
+  return compact(
+    input.currentContext?.trim() || "ユーザーに共有できる興味深い保存記事",
+    700,
+  );
 };
 
 export const createTopicStateInteractionLogContextSource = (options: {

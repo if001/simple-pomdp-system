@@ -6,6 +6,7 @@ import {
   InteractionLog,
   InteractionLogStore,
   InteractionObservation,
+  ProactiveContextInput,
   ProactiveContextSource,
   ProactiveTrigger,
   ProactiveTriggerOutput,
@@ -167,14 +168,19 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         threadId: input.threadId,
         limit: this.recentTurnLimit,
       });
-    const proactiveContext = await loadProactiveContext(
+    const recentTurnContext = formatRecentTurns(recentTurns);
+    const proactiveContext = [
+      ...recentTurnContext,
+      ...(await loadProactiveContext(
       this.options.contextSources,
       {
         botId: input.botId,
         threadId: input.threadId,
         userId: input.userId,
+        currentContext: recentTurnContext.join("\n"),
       },
-    );
+      )),
+    ];
     logSimplePomdp(
       `planning input trigger=${input.trigger} threadId=${input.threadId} recentTurns=${recentTurns.length} contextItems=${proactiveContext.length}`,
     );
@@ -213,7 +219,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
             ...(decision.targetTopic
               ? { targetTopic: decision.targetTopic }
               : {}),
-            recentTurns: formatRecentTurns(recentTurns),
+            recentTurns: recentTurnContext,
             topicState,
           })
         : null;
@@ -372,7 +378,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       })),
       initialDomainCandidates: input.initialDomainCandidates.slice(0, 24),
     });
-    console.log("[decideNextInteraction] raw_prompt: ", raw_prompt);
     const parsed =
       await this.options.plannerModel.generateJson<RawDialoguePlan>(
         [
@@ -424,7 +429,7 @@ export const createSimplePomdpSystemService = (
 
 const loadProactiveContext = async (
   sources: ProactiveContextSource[],
-  input: { botId: string; threadId: string; userId: string },
+  input: ProactiveContextInput,
 ): Promise<string[]> => {
   const context: string[] = [];
   for (const source of sources) {
@@ -501,8 +506,6 @@ const observeInteraction = async (
       feedbackNote: "観測窓内にユーザーから明示的な反応はなかった。",
     };
   }
-  console.log("[observeInteraction] log", log);
-  console.log("[observeInteraction] observedMessages", observedMessages);
   const parsed = await plannerModel.generateJson<ObservationResult>(
     [
       "あなたは、agent からの自発的な話しかけに対するユーザー反応を分類します。",

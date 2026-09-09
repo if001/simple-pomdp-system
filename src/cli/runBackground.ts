@@ -4,7 +4,7 @@ import { createQueueApi, FileQueueStore } from "@chat-agent/queue";
 import { createPostgresTurnRecordReader } from "@chat-agent/memory-system";
 import {
   createFileCachedDialoguePlanningModel,
-  createRecentTurnContextSource,
+  createSavedKnowledgeContextSource,
   createTopicStateInteractionLogContextSource,
   createUserMemoryContextSource,
   createPostgresUserMemoryReader,
@@ -117,9 +117,9 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
     topicStateStore,
     interactionLogStore,
     contextSources: [
-      createRecentTurnContextSource({
-        reader: turnRecordReader,
-        limit: recentTurnLimit,
+      createSavedKnowledgeContextSource({
+        knowledgeAccessService,
+        limit: 3,
       }),
       createUserMemoryContextSource({
         reader: createPostgresUserMemoryReader(
