@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
+  createMemoryServiceContextSource,
   createRecentTurnContextSource,
   createTopicStateInteractionLogContextSource,
   createUserMemoryContextSource,
@@ -96,6 +97,39 @@ test("user memory source scopes, filters, and limits memory items", async () => 
   assert.equal(context.length, 2);
   assert.ok(context.every((item) => item.length <= 40));
   assert.doesNotMatch(context.join(" "), /limit外/);
+});
+
+test("memory service source retrieves conversation and user context through one scoped search", async () => {
+  const calls: unknown[] = [];
+  const source = createMemoryServiceContextSource({
+    limit: 3,
+    memoryService: {
+      search: async (request) => {
+        calls.push(request);
+        return {
+          conversationHistory: {
+            status: "found",
+            data: [{ occurredAt: "2026-09-01T00:00:00.000Z", excerpt: "以前の会話" }],
+          },
+          userMemory: {
+            status: "found",
+            data: [{ note: "TypeScriptが好き" }],
+          },
+        };
+      },
+    },
+  });
+
+  const context = await source.load(input);
+
+  assert.deepEqual(calls, [{
+    ...input,
+    query: "recent conversation and durable user context",
+    scopes: ["conversation_history", "user_memory"],
+    limits: { conversation_history: 3, user_memory: 3 },
+  }]);
+  assert.match(context.join(" "), /以前の会話/);
+  assert.match(context.join(" "), /TypeScriptが好き/);
 });
 
 test("topic and interaction source reads one user and filters interaction scope", async () => {
