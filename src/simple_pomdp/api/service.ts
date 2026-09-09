@@ -268,16 +268,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     logSimplePomdp(
       `planning result threadId=${input.threadId} kind=${decision.kind}`,
     );
-    logSimplePomdp(
-      `decision\n` +
-        `kind:${decision.kind}\n` +
-        `reason: ${decision.reason}\n` +
-        `targetDomain:${decision.targetDomain}\n` +
-        `targetTopic:${decision.targetTopic}`,
-    );
-    logSimplePomdp(
-      `decision selected threadId=${input.threadId} kind=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
-    );
 
     const exploitResearch =
       decision.kind === "exploit" && this.options.exploitResearchAgent
@@ -332,7 +322,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       await this.options.backgroundInputSink.enqueue(output);
     }
     logSimplePomdp(
-      `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} decision=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
+      `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} kind=${decision.kind}`,
     );
     return output;
   }
@@ -374,7 +364,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
 
     for (const log of pending) {
       logSimplePomdp(
-        `observe start threadId=${input.threadId} interactionId=${log.id} kind=${log.candidateKind}${log.targetDomain ? ` domain=${log.targetDomain}` : ""}${log.targetTopic ? ` topic=${log.targetTopic}` : ""}`,
+        `observe start threadId=${input.threadId} interactionId=${log.id} kind=${log.candidateKind}`,
       );
       const observation = await observeInteraction(
         this.options.plannerModel,
@@ -385,7 +375,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       );
       if (observation.kind === "pending") {
         logSimplePomdp(
-          `observe pending threadId=${input.threadId} interactionId=${log.id} windowTurns=${this.observeWindowTurns}`,
+          `observe pending threadId=${input.threadId} interactionId=${log.id}`,
         );
         continue;
       }
@@ -401,9 +391,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         `observe resolved threadId=${input.threadId} interactionId=${log.id} observation=${observation.observation}`,
       );
       if (completedLog.observation === "no_response") {
-        logSimplePomdp(
-          `topic state unchanged threadId=${input.threadId} interactionId=${log.id} reason=no_response`,
-        );
         continue;
       }
       const nextTopicState = applyInteractionObservationToTopicState(
@@ -520,6 +507,7 @@ const normalizeConversationOpportunity = (raw: {
     conversationOpportunitySkipReasons.has(raw.reason) &&
     detail
   ) {
+    console.log("[observeInteraction] timeout");
     return {
       kind: "skip",
       reason: raw.reason as ConversationOpportunitySkipReason,
@@ -573,7 +561,6 @@ const observeInteraction = async (
     pendingTimeoutMs > 0 &&
     now.getTime() - interactionAt >= pendingTimeoutMs
   ) {
-    console.log("[observeInteraction] timeout");
     return {
       kind: "resolved",
       status: "expired",
