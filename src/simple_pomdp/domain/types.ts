@@ -18,6 +18,32 @@ export interface TopicStateSnapshot {
 export type DialogueDecisionKind = "exploit" | "refine" | "explore";
 export type ProactiveTrigger = "conversation" | "scheduled";
 
+export type ConversationOpportunitySkipReason =
+  | "active_conversation"
+  | "confirmation"
+  | "correction"
+  | "work_in_progress"
+  | "error"
+  | "assessment_unavailable";
+
+export type ConversationOpportunityAssessment =
+  | { kind: "opportunity"; reason: string }
+  | {
+      kind: "skip";
+      reason: ConversationOpportunitySkipReason;
+      detail: string;
+    };
+
+export interface ConversationOpportunityAssessor {
+  assess(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    currentContext: string;
+    recentTurns: string[];
+  }): Promise<ConversationOpportunityAssessment>;
+}
+
 export interface DialogueDecision {
   kind: DialogueDecisionKind;
   targetDomain: string;
@@ -196,6 +222,26 @@ export interface ProactiveContextInput {
 export interface ProactiveContextSource {
   name: string;
   load(input: ProactiveContextInput): Promise<string[]>;
+}
+
+export interface MemoryServiceReader {
+  search(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    query: string;
+    scopes: Array<"conversation_history" | "user_memory">;
+    limits?: Partial<Record<"conversation_history" | "user_memory", number>>;
+  }): Promise<{
+    conversationHistory?:
+      | { status: "found"; data: Array<{ occurredAt: string; excerpt: string }> }
+      | { status: "not_found" }
+      | { status: "unavailable"; reason?: string };
+    userMemory?:
+      | { status: "found"; data: Array<{ note: string }> }
+      | { status: "not_found" }
+      | { status: "unavailable"; reason?: string };
+  }>;
 }
 
 export interface UserMemoryItem {

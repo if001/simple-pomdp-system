@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   BackgroundInputSink,
+  ConversationOpportunityAssessment,
+  ConversationOpportunitySkipReason,
   DialogueDecision,
   DialoguePlanningModel,
   InteractionLog,
@@ -23,6 +25,18 @@ export interface SimplePomdpSystemService {
     botId: string;
     userId: string;
   }): Promise<TopicStateSnapshot | null>;
+  assessConversationOpportunity(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    currentContext: string;
+  }): Promise<ConversationOpportunityAssessment>;
+  planInteraction(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    trigger: ProactiveTrigger;
+  }): Promise<ProactiveTriggerOutput | null>;
   runTrigger(input: {
     botId: string;
     threadId: string;
@@ -105,6 +119,62 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
   }
 
   async runTrigger(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    trigger: ProactiveTrigger;
+  }): Promise<ProactiveTriggerOutput | null> {
+    return this.planInteraction(input);
+  }
+
+  async assessConversationOpportunity(input: {
+    botId: string;
+    threadId: string;
+    userId: string;
+    currentContext: string;
+  }): Promise<ConversationOpportunityAssessment> {
+    const currentContext = input.currentContext.trim();
+    if (!currentContext) {
+      return {
+        kind: "skip",
+        reason: "active_conversation",
+        detail: "current input is empty",
+      };
+    }
+    const turns = await this.options.turnRecordReader.listRecentTurnRecords({
+      botId: input.botId,
+      threadId: input.threadId,
+      limit: this.recentTurnLimit,
+    });
+    try {
+      const raw = await this.options.plannerModel.generateJson<{
+        kind?: string;
+        reason?: string;
+        detail?: string;
+      }>(
+        [
+          "You assess whether one optional proactive topic can be added to the current conversation reply.",
+          "Return kind=skip for an active conversation, confirmation or acknowledgement, correction, work still in progress, or an actual error/failure report.",
+          "Do not treat a technical discussion about error handling as an actual error report.",
+          "For skip, reason must be active_conversation, confirmation, correction, work_in_progress, or error. For an opportunity return kind=opportunity and a short reason.",
+          "Return JSON only. Do not select a topic.",
+        ].join(" "),
+        JSON.stringify({
+          currentContext: currentContext.slice(0, 800),
+          recentTurns: formatRecentTurns(turns).slice(-this.recentTurnLimit),
+        }),
+      );
+      return normalizeConversationOpportunity(raw);
+    } catch (error) {
+      return {
+        kind: "skip",
+        reason: "assessment_unavailable",
+        detail: error instanceof Error ? error.message : "assessment failed",
+      };
+    }
+  }
+
+  async planInteraction(input: {
     botId: string;
     threadId: string;
     userId: string;
@@ -421,6 +491,42 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
 export const createSimplePomdpSystemService = (
   options: SimplePomdpSystemOptions,
 ): SimplePomdpSystemService => new DefaultSimplePomdpSystemService(options);
+
+const conversationOpportunitySkipReasons: ReadonlySet<string> = new Set([
+  "active_conversation",
+  "confirmation",
+  "correction",
+  "work_in_progress",
+  "error",
+] satisfies ConversationOpportunitySkipReason[]);
+
+const normalizeConversationOpportunity = (raw: {
+  kind?: string;
+  reason?: string;
+  detail?: string;
+}): ConversationOpportunityAssessment => {
+  const detail = raw.detail?.trim() || raw.reason?.trim();
+  if (raw.kind === "opportunity" && detail) {
+    return { kind: "opportunity", reason: detail };
+  }
+  if (
+    raw.kind === "skip" &&
+    raw.reason &&
+    conversationOpportunitySkipReasons.has(raw.reason) &&
+    detail
+  ) {
+    return {
+      kind: "skip",
+      reason: raw.reason as ConversationOpportunitySkipReason,
+      detail,
+    };
+  }
+  return {
+    kind: "skip",
+    reason: "assessment_unavailable",
+    detail: "invalid conversation opportunity assessment",
+  };
+};
 
 const loadProactiveContext = async (
   sources: ProactiveContextSource[],

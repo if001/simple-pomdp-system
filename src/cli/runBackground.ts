@@ -1,13 +1,14 @@
 import { join } from "node:path";
 import { ChatOllama } from "@langchain/ollama";
 import { createQueueApi, FileQueueStore } from "@chat-agent/queue";
-import { createPostgresTurnRecordReader } from "@chat-agent/memory-system";
+import {
+  createMemorySystemService,
+  createPostgresTurnRecordReader,
+} from "@chat-agent/memory-system";
 import {
   createFileCachedDialoguePlanningModel,
-  createRecentTurnContextSource,
+  createMemoryServiceContextSource,
   createTopicStateInteractionLogContextSource,
-  createUserMemoryContextSource,
-  createPostgresUserMemoryReader,
   createLangChainExploitResearchAgent,
   createFileInteractionLogStore,
   createFileQueueBackgroundInputSink,
@@ -18,7 +19,6 @@ import {
   getFileQueueStatus,
   type KnowledgeAccessService,
   type SimplePomdpBackgroundAppOptions,
-  type UserMemoryQueryExecutor,
 } from "../index";
 
 export const buildSimplePomdpBackgroundAppFromEnv = async (
@@ -83,6 +83,17 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
   const turnRecordReader = createPostgresTurnRecordReader(
     requiredFromEnv(env, "POSTGRES_URL"),
   );
+  const memoryService = createMemorySystemService({
+    postgresUrl: requiredFromEnv(env, "POSTGRES_URL"),
+    ollamaBaseUrl: requiredFromEnv(env, "OLLAMA_BASE_URL"),
+    ollamaModel: requiredFromEnv(env, "OLLAMA_CHAT_MODEL"),
+    ollamaAPIKey: env.OLLAMA_API_KEY ?? "",
+    ollamaEmbeddingBaseUrl: requiredFromEnv(
+      env,
+      "OLLAMA_EMBEDDING_BASE_URL",
+    ),
+    ollamaEmbeddingModel: requiredFromEnv(env, "OLLAMA_EMBEDDING_MODEL"),
+  });
   const topicStateStore = createFileTopicStateStore({
     baseDir: join(storeDir, "topic-states"),
   });
@@ -117,14 +128,9 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
     topicStateStore,
     interactionLogStore,
     contextSources: [
-      createRecentTurnContextSource({
-        reader: turnRecordReader,
+      createMemoryServiceContextSource({
+        memoryService,
         limit: recentTurnLimit,
-      }),
-      createUserMemoryContextSource({
-        reader: createPostgresUserMemoryReader(
-          knowledgePool as UserMemoryQueryExecutor,
-        ),
       }),
       createTopicStateInteractionLogContextSource({
         topicStateReader: topicStateStore,
