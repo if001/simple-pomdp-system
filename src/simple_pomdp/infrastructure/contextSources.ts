@@ -1,5 +1,6 @@
 import {
   InteractionLogStore,
+  MemoryServiceReader,
   ProactiveContextSource,
   TurnRecord,
   TurnRecordReader,
@@ -60,6 +61,36 @@ export const createUserMemoryContextSource = (options: {
   };
 };
 
+export const createMemoryServiceContextSource = (options: {
+  memoryService: MemoryServiceReader;
+  query?: string;
+} & ContextLimitOptions): ProactiveContextSource => {
+  const limit = positiveInteger(options.limit, 8);
+  const maxItemLength = positiveInteger(options.maxItemLength, 360);
+  return {
+    name: "memory-service",
+    async load(input) {
+      const result = await options.memoryService.search({
+        ...input,
+        query: options.query ?? "recent conversation and durable user context",
+        scopes: ["conversation_history", "user_memory"],
+        limits: { conversation_history: limit, user_memory: limit },
+      });
+      const turns = result.conversationHistory?.status === "found"
+        ? result.conversationHistory.data.map((item) =>
+            compact(`[conversation-memory at=${item.occurredAt}] ${item.excerpt}`, maxItemLength),
+          )
+        : [];
+      const memories = result.userMemory?.status === "found"
+        ? result.userMemory.data.map((item) =>
+            compact(`[user-memory] ${item.note}`, maxItemLength),
+          )
+        : [];
+      return [...turns, ...memories].slice(0, limit);
+    },
+  };
+};
+
 export const createSavedKnowledgeContextSource = (options: {
   knowledgeAccessService: Pick<KnowledgeAccessService, "searchSavedKnowledge">;
 } & ContextLimitOptions): ProactiveContextSource => {
@@ -97,7 +128,6 @@ const buildKnowledgeQuery = async (
     700,
   );
 };
-
 export const createTopicStateInteractionLogContextSource = (options: {
   topicStateReader: Pick<TopicStateStore, "getTopicState">;
   interactionLogReader: Pick<InteractionLogStore, "listRecentInteractionLogs">;

@@ -81,6 +81,92 @@ test("conversation trigger returns one integration instruction without enqueuein
   assert.equal(logs[0]?.id, output.sourceInteractionId);
 });
 
+test.each([
+  "active_conversation",
+  "confirmation",
+  "correction",
+  "work_in_progress",
+  "error",
+] as const)("conversation opportunity preserves the %s skip reason", async (reason) => {
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    plannerModel: {
+      generateJson: async () => ({ kind: "skip", reason, detail: `skip: ${reason}` }),
+    },
+  });
+
+  assert.deepEqual(await service.assessConversationOpportunity({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "discord-user",
+    currentContext: "current message",
+  }), { kind: "skip", reason, detail: `skip: ${reason}` });
+});
+
+test("planner is invoked only after an eligible conversation opportunity", async () => {
+  let calls = 0;
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    plannerModel: {
+      generateJson: async (_system, prompt) => {
+        calls += 1;
+        if (prompt.includes("currentContext")) {
+          return { kind: "skip", reason: "confirmation", detail: "acknowledgement" };
+        }
+        throw new Error("planner must not be called");
+      },
+    },
+  });
+  const assessment = await service.assessConversationOpportunity({
+    botId: "ao", threadId: "thread-1", userId: "discord-user", currentContext: "了解",
+  });
+  if (assessment.kind === "opportunity") {
+    await service.planInteraction({
+      botId: "ao", threadId: "thread-1", userId: "discord-user", trigger: "conversation",
+    });
+  }
+  assert.equal(calls, 1);
+  assert.equal(assessment.kind, "skip");
+});
+
+test("eligible opportunity can be followed by an explore/refine/exploit plan", async () => {
+  let calls = 0;
+  const service = createTestService({
+    turnRecordReader: createInMemoryTurnRecordReader(),
+    topicStateStore: createInMemoryTopicStateStore(),
+    interactionLogStore: createInMemoryInteractionLogStore(),
+    plannerModel: {
+      generateJson: async (_system, prompt) => {
+        calls += 1;
+        return prompt.includes("currentContext")
+          ? { kind: "opportunity", reason: "the prior topic is complete" }
+          : {
+              kind: "explore",
+              targetDomain: "music",
+              messageIntent: "ask about music",
+              reason: "unknown interest",
+            };
+      },
+    },
+  });
+  const assessment = await service.assessConversationOpportunity({
+    botId: "ao", threadId: "thread-1", userId: "discord-user", currentContext: "それは解決したよ",
+  });
+  assert.equal(assessment.kind, "opportunity");
+  const output = assessment.kind === "opportunity"
+    ? await service.planInteraction({
+        botId: "ao", threadId: "thread-1", userId: "discord-user", trigger: "conversation",
+      })
+    : null;
+  assert.ok(output);
+  assert.equal(calls, 2);
+  assert.match(output.text, /explore/);
+});
+
 test("same-time interactions have unique IDs across threads and trigger types", async () => {
   const interactionLogStore = createInMemoryInteractionLogStore();
   const enqueued: ScheduledAgentInput[] = [];

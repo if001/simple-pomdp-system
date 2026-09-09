@@ -24,20 +24,14 @@ export const createSimplePomdpBackgroundRunner = (
   let inFlight: Promise<void> | null = null;
 
   const executeCycle = async (): Promise<void> => {
-    process.stdout.write(
-      "[simple-pomdp-runner] ------------- cycle start ---------------- \n",
-    );
     if (options.shouldRun && !(await options.shouldRun())) {
       process.stdout.write("[simple-pomdp-runner] skipped by shouldRun\n");
       return;
     }
     process.stdout.write(
-      `[simple-pomdp-runner] cycle start botId=${options.botId} threads=${options.threadIds.length}\n`,
+      `[simple-pomdp-runner] cycle start threads=${options.threadIds.length}\n`,
     );
     for (const threadId of options.threadIds) {
-      process.stdout.write(
-        `[simple-pomdp-runner] dispatch threadId=${threadId} userId=${options.userId}\n`,
-      );
       await service.runTrigger({
         botId: options.botId,
         threadId,
@@ -45,9 +39,7 @@ export const createSimplePomdpBackgroundRunner = (
         trigger: "scheduled",
       });
     }
-    process.stdout.write(
-      "[simple-pomdp-runner] ------------- cycle complete ---------------- \n",
-    );
+    process.stdout.write("[simple-pomdp-runner] cycle complete\n");
   };
 
   const runOnce = async (): Promise<void> => {
@@ -67,9 +59,7 @@ export const createSimplePomdpBackgroundRunner = (
     void runOnce()
       .catch((error: unknown) => {
         const message =
-          error instanceof Error
-            ? (error.stack ?? error.message)
-            : String(error);
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
         process.stdout.write(`[simple-pomdp-background-error] ${message}\n`);
       });
   };
@@ -81,7 +71,7 @@ export const createSimplePomdpBackgroundRunner = (
       }
       running = true;
       process.stdout.write(
-        `[simple-pomdp-runner] start pollMs=${pollMs} threads=${options.threadIds.join(",")}\n`,
+        `[simple-pomdp-runner] start pollMs=${pollMs} threads=${options.threadIds.length}\n`,
       );
       timer = setInterval(tick, pollMs);
       tick();
