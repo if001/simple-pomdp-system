@@ -199,9 +199,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     userId: string;
     trigger: ProactiveTrigger;
   }): Promise<ProactiveTriggerOutput | null> {
-    logSimplePomdp(
-      `dispatch start botId=${input.botId} threadId=${input.threadId} userId=${input.userId}`,
-    );
     await this.refreshTopicStateFromPendingInteractions(input);
 
     const topicState =
@@ -223,13 +220,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         log.threadId === input.threadId &&
         isPendingInteraction(log),
     );
-    logSimplePomdp(
-      `dispatch state threadId=${input.threadId} topics=${topicState.topics.length} logs=${interactionLogs.length} pending=${pendingLogs.length}`,
-    );
     if (pendingLogs.length >= this.maxPendingInteractions) {
-      logSimplePomdp(
-        `dispatch skip threadId=${input.threadId} reason=max_pending_interactions pending=${pendingLogs.length} limit=${this.maxPendingInteractions}`,
-      );
       return null;
     }
     const recentTurns =
@@ -251,9 +242,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       },
       )),
     ];
-    logSimplePomdp(
-      `planning input trigger=${input.trigger} threadId=${input.threadId} recentTurns=${recentTurns.length} contextItems=${proactiveContext.length}`,
-    );
     const decision = await this.decideNextInteraction({
       proactiveContext,
       topicState,
@@ -265,19 +253,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       trigger: input.trigger,
       initialDomainCandidates: this.initialDomainCandidates,
     });
-    logSimplePomdp(
-      `planning result threadId=${input.threadId} kind=${decision.kind}`,
-    );
-    logSimplePomdp(
-      `decision\n` +
-        `kind:${decision.kind}\n` +
-        `reason: ${decision.reason}\n` +
-        `targetDomain:${decision.targetDomain}\n` +
-        `targetTopic:${decision.targetTopic}`,
-    );
-    logSimplePomdp(
-      `decision selected threadId=${input.threadId} kind=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
-    );
 
     const exploitResearch =
       decision.kind === "exploit" && this.options.exploitResearchAgent
@@ -331,9 +306,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     if (output.trigger === "scheduled" && this.options.backgroundInputSink) {
       await this.options.backgroundInputSink.enqueue(output);
     }
-    logSimplePomdp(
-      `dispatched botId=${input.botId} threadId=${input.threadId} interactionId=${interactionId} decision=${decision.kind} domain=${decision.targetDomain}${decision.targetTopic ? ` topic=${decision.targetTopic}` : ""}`,
-    );
     return output;
   }
 
@@ -357,9 +329,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     if (pending.length === 0) {
       return;
     }
-    logSimplePomdp(
-      `refresh start threadId=${input.threadId} pendingInteractions=${pending.length}`,
-    );
     let topicState =
       (await this.options.topicStateStore.getTopicState({
         botId: input.botId,
@@ -373,9 +342,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     });
 
     for (const log of pending) {
-      logSimplePomdp(
-        `observe start threadId=${input.threadId} interactionId=${log.id} kind=${log.candidateKind}${log.targetDomain ? ` domain=${log.targetDomain}` : ""}${log.targetTopic ? ` topic=${log.targetTopic}` : ""}`,
-      );
       const observation = await observeInteraction(
         this.options.plannerModel,
         log,
@@ -384,9 +350,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         this.pendingTimeoutMs,
       );
       if (observation.kind === "pending") {
-        logSimplePomdp(
-          `observe pending threadId=${input.threadId} interactionId=${log.id} windowTurns=${this.observeWindowTurns}`,
-        );
         continue;
       }
       const completedLog: InteractionLog = {
@@ -397,13 +360,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         resolvedAtIso: this.now().toISOString(),
       };
       await this.options.interactionLogStore.saveInteractionLog(completedLog);
-      logSimplePomdp(
-        `observe resolved threadId=${input.threadId} interactionId=${log.id} observation=${observation.observation}`,
-      );
       if (completedLog.observation === "no_response") {
-        logSimplePomdp(
-          `topic state unchanged threadId=${input.threadId} interactionId=${log.id} reason=no_response`,
-        );
         continue;
       }
       const nextTopicState = applyInteractionObservationToTopicState(
@@ -416,9 +373,6 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
         userId: input.userId,
         state: nextTopicState,
       });
-      logSimplePomdp(
-        `topic state saved threadId=${input.threadId} interactionId=${log.id} topics=${nextTopicState.topics.length}`,
-      );
       topicState = nextTopicState;
     }
   }
@@ -573,7 +527,6 @@ const observeInteraction = async (
     pendingTimeoutMs > 0 &&
     now.getTime() - interactionAt >= pendingTimeoutMs
   ) {
-    console.log("[observeInteraction] timeout");
     return {
       kind: "resolved",
       status: "expired",
@@ -600,11 +553,9 @@ const observeInteraction = async (
   const hasUserMessage = observedMessages.length > 0;
 
   if (!hasUserMessage && reactionTurns.length < log.observeWindowTurns) {
-    console.log("[observeInteraction] set pending");
     return { kind: "pending" };
   }
   if (!hasUserMessage) {
-    console.log("[observeInteraction] no user message");
     return {
       kind: "resolved",
       status: "expired",
@@ -681,10 +632,6 @@ const applyInteractionObservationToTopicState = (
     topics: topics.slice(-64),
     updatedAtIso: nowIso,
   };
-};
-
-const logSimplePomdp = (message: string): void => {
-  process.stdout.write(`[simple-pomdp] ${message}\n`);
 };
 
 const createDefaultTopicState = (

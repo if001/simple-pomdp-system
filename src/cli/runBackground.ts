@@ -283,7 +283,7 @@ const main = async (): Promise<void> => {
     return;
   }
   process.stdout.write(
-    `[simple-pomdp] starting botId=${built.meta.botId} userId=${built.meta.userId} threads=${built.meta.threadIds.join(",")} domains=${built.meta.initialDomainCount} domainsFile=${built.meta.initialDomainCandidatesFile}\n`,
+    `[simple-pomdp] starting threads=${built.meta.threadIds.length} domains=${built.meta.initialDomainCount}\n`,
   );
   built.app.runner.start();
   const shutdown = (): void => {
@@ -320,10 +320,8 @@ const optionalNumberFromEnv = (
 };
 
 if (require.main === module) {
-  main().catch((error: unknown) => {
-    const message =
-      error instanceof Error ? (error.stack ?? error.message) : String(error);
-    process.stdout.write(`${message}\n`);
+  main().catch(() => {
+    process.stdout.write("[simple-pomdp-error] startup failed\n");
     process.exit(1);
   });
 }
