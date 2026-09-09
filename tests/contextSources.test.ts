@@ -3,6 +3,7 @@ import { test } from "vitest";
 import {
   createMemoryServiceContextSource,
   createRecentTurnContextSource,
+  createSavedKnowledgeContextSource,
   createTopicStateInteractionLogContextSource,
   createUserMemoryContextSource,
 } from "../src/simple_pomdp/infrastructure/contextSources";
@@ -72,6 +73,24 @@ test("recent turn source scopes its reader and excludes internal messages", asyn
   assert.match(context[0] ?? "", /visible proactive response/);
   assert.doesNotMatch(context[0] ?? "", /internal/);
   assert.ok((context[0]?.length ?? 0) <= 120);
+});
+
+test("shared saved knowledge source searches from supplied recent context", async () => {
+  const calls: unknown[] = [];
+  const source = createSavedKnowledgeContextSource({
+    knowledgeAccessService: {
+      searchSavedKnowledge: async (input) => {
+        calls.push(input);
+        return [{ articleId: "article-1", score: 0.9, title: "Agent design", summary: "shared summary", tags: ["agent"], url: "https://example.com/a" }];
+      },
+    },
+  });
+
+  const result = await source.load({ botId: "ao", threadId: "thread-1", userId: "user-1", currentContext: "agent設計について話している" });
+
+  assert.deepEqual(calls, [{ query: "agent設計について話している", limit: 3, minScore: 0.35 }]);
+  assert.match(result[0] ?? "", /articleId=article-1/);
+  assert.doesNotMatch(result[0] ?? "", /score=/);
 });
 
 test("user memory source scopes, filters, and limits memory items", async () => {

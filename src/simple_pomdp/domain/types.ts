@@ -1,4 +1,7 @@
+import type { KnowledgeAccessService } from "@chat-agent/knowledge-access";
+
 export type { TurnRecord, TurnRecordReader } from "@chat-agent/memory-system";
+export type { KnowledgeAccessService } from "@chat-agent/knowledge-access";
 
 export type TopicAssessment = "unknown" | "avoid" | "possible" | "interested";
 
@@ -102,69 +105,6 @@ export type ProactiveTriggerOutput =
   | ConversationTopicOutput
   | ScheduledAgentInput;
 
-export interface KnowledgeAccessSearchResultItem {
-  articleId: string;
-  score: number;
-  title: string;
-  summary: string;
-  tags: string[];
-  url: string;
-}
-
-export interface KnowledgeAccessSavedArticle {
-  id: string;
-  url: string;
-  title: string;
-  summary: string;
-  content: string;
-  tags: string[];
-  rawMarkdown: string;
-  createdAt: Date;
-}
-
-export interface KnowledgeAccessWebListItem {
-  rank: number;
-  title: string;
-  url: string;
-  snippet?: string;
-  publishedDate?: string;
-}
-
-export interface KnowledgeAccessWebPage {
-  url: string;
-  title: string;
-  markdown: string;
-}
-
-export interface KnowledgeAccessService {
-  searchSavedKnowledge(input: {
-    query: string;
-    limit?: number;
-    minScore?: number;
-  }): Promise<KnowledgeAccessSearchResultItem[]>;
-  getSavedArticle(input: {
-    articleId?: string;
-    url?: string;
-  }): Promise<KnowledgeAccessSavedArticle | null>;
-  webList(input: {
-    query: string;
-    limit: number;
-  }): Promise<KnowledgeAccessWebListItem[]>;
-  webPage(input: {
-    url: string;
-  }): Promise<KnowledgeAccessWebPage>;
-  saveWebKnowledge(input: {
-    botId: string;
-    threadId?: string;
-    url: string;
-  }): Promise<{
-    articleId: string;
-    title: string;
-    summary: string;
-    url: string;
-  }>;
-}
-
 export interface ExploitResearchResult {
   summary: string;
   articleIds: string[];
@@ -217,6 +157,8 @@ export interface ProactiveContextInput {
   botId: string;
   threadId: string;
   userId: string;
+  /** Compact recent-turn context supplied by the service; not persisted. */
+  currentContext?: string;
 }
 
 export interface ProactiveContextSource {

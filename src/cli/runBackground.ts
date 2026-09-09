@@ -8,6 +8,7 @@ import {
 import {
   createFileCachedDialoguePlanningModel,
   createMemoryServiceContextSource,
+  createSavedKnowledgeContextSource,
   createTopicStateInteractionLogContextSource,
   createLangChainExploitResearchAgent,
   createFileInteractionLogStore,
@@ -131,6 +132,10 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       createMemoryServiceContextSource({
         memoryService,
         limit: recentTurnLimit,
+      }),
+      createSavedKnowledgeContextSource({
+        knowledgeAccessService,
+        limit: 3,
       }),
       createTopicStateInteractionLogContextSource({
         topicStateReader: topicStateStore,
