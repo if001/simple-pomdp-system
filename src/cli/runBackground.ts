@@ -320,8 +320,10 @@ const optionalNumberFromEnv = (
 };
 
 if (require.main === module) {
-  main().catch(() => {
-    process.stdout.write("[simple-pomdp-error] startup failed\n");
+  main().catch((error: unknown) => {
+    const message =
+      error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stdout.write(`[simple-pomdp-error] ${message}\n`);
     process.exit(1);
   });
 }
