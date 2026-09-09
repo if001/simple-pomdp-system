@@ -57,8 +57,10 @@ export const createSimplePomdpBackgroundRunner = (
       return;
     }
     void runOnce()
-      .catch(() => {
-        process.stdout.write("[simple-pomdp-background-error] cycle failed\n");
+      .catch((error: unknown) => {
+        const message =
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
+        process.stdout.write(`[simple-pomdp-background-error] ${message}\n`);
       });
   };
 
