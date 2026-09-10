@@ -200,7 +200,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     trigger: ProactiveTrigger;
   }): Promise<ProactiveTriggerOutput | null> {
     logSimplePomdp(
-      `dispatch start botId=${input.botId} threadId=${input.threadId} userId=${input.userId}`,
+      `dispatch start botId=${input.botId} threadId=${input.threadId} userId=${input.userId} trigger=${input.trigger}`,
     );
     await this.refreshTopicStateFromPendingInteractions(input);
 
@@ -208,8 +208,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       (await this.options.topicStateStore.getTopicState({
         botId: input.botId,
         userId: input.userId,
-      })) ??
-      createDefaultTopicState(input.userId, this.now().toISOString());
+      })) ?? createDefaultTopicState(input.userId, this.now().toISOString());
     const interactionLogs = (
       await this.options.interactionLogStore.listRecentInteractionLogs({
         botId: input.botId,
@@ -241,15 +240,12 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     const recentTurnContext = formatRecentTurns(recentTurns);
     const proactiveContext = [
       ...recentTurnContext,
-      ...(await loadProactiveContext(
-      this.options.contextSources,
-      {
+      ...(await loadProactiveContext(this.options.contextSources, {
         botId: input.botId,
         threadId: input.threadId,
         userId: input.userId,
         currentContext: recentTurnContext.join("\n"),
-      },
-      )),
+      })),
     ];
     logSimplePomdp(
       `planning input trigger=${input.trigger} threadId=${input.threadId} recentTurns=${recentTurns.length} contextItems=${proactiveContext.length}`,
@@ -258,8 +254,8 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       proactiveContext,
       topicState,
       triedTopics: interactionLogs.flatMap((log) =>
-        [log.targetDomain, log.targetTopic].filter(
-          (value): value is string => Boolean(value),
+        [log.targetDomain, log.targetTopic].filter((value): value is string =>
+          Boolean(value),
         ),
       ),
       trigger: input.trigger,
@@ -318,6 +314,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       observeWindowTurns: this.observeWindowTurns,
       createdAtIso: this.now().toISOString(),
     });
+    logSimplePomdp(`[executeTrigger]: output.trigger ${output.trigger}`);
     if (output.trigger === "scheduled" && this.options.backgroundInputSink) {
       await this.options.backgroundInputSink.enqueue(output);
     }
@@ -354,8 +351,7 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
       (await this.options.topicStateStore.getTopicState({
         botId: input.botId,
         userId: input.userId,
-      })) ??
-      createDefaultTopicState(input.userId, this.now().toISOString());
+      })) ?? createDefaultTopicState(input.userId, this.now().toISOString());
     const turns = await this.options.turnRecordReader.listRecentTurnRecords({
       botId: input.botId,
       threadId: input.threadId,
@@ -463,7 +459,9 @@ class DefaultSimplePomdpSystemService implements SimplePomdpSystemService {
     const requiresInitialExplore =
       input.topicState.topics.length === 0 && input.triedTopics.length === 0;
     const primary = normalizeDialogueDecision(parsed, input.topicState);
-    if (isAcceptableDecision(primary, input.topicState, requiresInitialExplore)) {
+    if (
+      isAcceptableDecision(primary, input.topicState, requiresInitialExplore)
+    ) {
       return primary;
     }
     const fallback = normalizeDialogueDecision(
@@ -818,10 +816,7 @@ const normalizeDialogueDecision = (
     if (value.kind === "explore" && matched) {
       return null;
     }
-    if (
-      (value.kind === "refine" || value.kind === "exploit") &&
-      !matched
-    ) {
+    if ((value.kind === "refine" || value.kind === "exploit") && !matched) {
       return null;
     }
     return {
@@ -831,7 +826,7 @@ const normalizeDialogueDecision = (
         ? { targetTopic: matched.topic }
         : value.targetTopic?.trim()
           ? { targetTopic: value.targetTopic.trim() }
-        : {}),
+          : {}),
       messageIntent: value.messageIntent.trim(),
       reason,
     };
@@ -863,11 +858,12 @@ const isAcceptableDecision = (
   (!requiresInitialExplore || decision.kind === "explore");
 
 const createSafeFallbackExploreDecision = (): DialogueDecision => ({
-    kind: "explore",
-    targetDomain: "general interests",
-    messageIntent: "一般的な関心について短く尋ねる",
-    reason: "意味的に安全な代替候補を検証できなかったため、特定話題を避けて探索する",
-  });
+  kind: "explore",
+  targetDomain: "general interests",
+  messageIntent: "一般的な関心について短く尋ねる",
+  reason:
+    "意味的に安全な代替候補を検証できなかったため、特定話題を避けて探索する",
+});
 
 const formatRecentTurns = (turns: TurnRecord[]): string[] =>
   turns

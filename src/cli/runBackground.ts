@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ChatOllama } from "@langchain/ollama";
 import { createQueueApi, FileQueueStore } from "@chat-agent/queue";
 import {
@@ -33,12 +33,11 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
   if (threadIds.length === 0) {
     return { kind: "empty" as const };
   }
-  const userId = deriveBackgroundUserId(
-    threadIds,
-    env.SIMPLE_POMDP_USER_ID,
-  );
+  const userId = deriveBackgroundUserId(threadIds, env.SIMPLE_POMDP_USER_ID);
   const storeDir = env.SIMPLE_POMDP_STORE_DIR ?? "data/simple-pomdp-system";
-  const queueFilePath = requiredFromEnv(env, "SIMPLE_POMDP_QUEUE_FILE");
+  const queueFilePath = resolve(
+    requiredFromEnv(env, "SIMPLE_POMDP_QUEUE_FILE"),
+  );
   const queueApi = createQueueApi(new FileQueueStore(queueFilePath));
   const initialDomainCandidatesFile =
     env.SIMPLE_POMDP_INITIAL_DOMAIN_CANDIDATES_FILE ??
@@ -89,10 +88,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
     ollamaBaseUrl: requiredFromEnv(env, "OLLAMA_BASE_URL"),
     ollamaModel: requiredFromEnv(env, "OLLAMA_CHAT_MODEL"),
     ollamaAPIKey: env.OLLAMA_API_KEY ?? "",
-    ollamaEmbeddingBaseUrl: requiredFromEnv(
-      env,
-      "OLLAMA_EMBEDDING_BASE_URL",
-    ),
+    ollamaEmbeddingBaseUrl: requiredFromEnv(env, "OLLAMA_EMBEDDING_BASE_URL"),
     ollamaEmbeddingModel: requiredFromEnv(env, "OLLAMA_EMBEDDING_MODEL"),
   });
   const topicStateStore = createFileTopicStateStore({
@@ -207,6 +203,7 @@ export const buildSimplePomdpBackgroundAppFromEnv = async (
       threadIds,
       initialDomainCandidatesFile,
       initialDomainCount: initialDomainCandidates.length,
+      queueFilePath,
     },
   };
 };
@@ -221,9 +218,7 @@ export const deriveBackgroundUserId = (
   const userIds = threadIds.map(parseThreadUserId);
   const userId = userIds[0] as string;
   if (userIds.some((candidate) => candidate !== userId)) {
-    throw new Error(
-      "SIMPLE_POMDP_THREAD_IDS must all belong to the same user",
-    );
+    throw new Error("SIMPLE_POMDP_THREAD_IDS must all belong to the same user");
   }
   const configured = explicitUserId?.trim();
   if (configured && configured !== userId) {
@@ -284,6 +279,9 @@ const main = async (): Promise<void> => {
   }
   process.stdout.write(
     `[simple-pomdp] starting threads=${built.meta.threadIds.length} domains=${built.meta.initialDomainCount}\n`,
+  );
+  process.stdout.write(
+    `[DEBUG-pomdp-queue] producer_initialized botId=${built.meta.botId} queuePath=${built.meta.queueFilePath} pid=${process.pid}\n`,
   );
   built.app.runner.start();
   const shutdown = (): void => {

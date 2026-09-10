@@ -30,8 +30,9 @@ export const createFileQueueBackgroundInputSink = (
           `simple-pomdp conversation queue requires channelId:userId threadId, got: ${input.threadId}`,
         );
       }
+      let task;
       try {
-        await options.queueApi.enqueueConversationInput({
+        task = await options.queueApi.enqueueConversationInput({
           botId: input.botId,
           userId: thread.userId,
           channelId: thread.channelId,
@@ -45,6 +46,9 @@ export const createFileQueueBackgroundInputSink = (
         throw error;
       }
       await appendDebugLog(options.debugLogFilePath, "enqueued", input);
+      process.stdout.write(
+        `[DEBUG-pomdp-queue] enqueued taskId=${task.id} interactionId=${input.sourceInteractionId} action=${task.action} source=${task.source} threadId=${task.targetThreadId} dueAt=${task.dueAt} conversationVersion=${task.conversationVersion}\n`,
+      );
       process.stdout.write(
         `[simple-pomdp] queued threadId=${input.threadId} key=${input.sourceInteractionId}\n`,
       );
